@@ -22,6 +22,16 @@ function makeSite(overrides: Partial<Site> = {}): Site {
   } as Site;
 }
 
+function makeMapping(site: Site, overrides?: Partial<SiteMapping>): SiteMapping {
+  return {
+    localSiteId: site.id,
+    serverId: 100,
+    appId: 200,
+    appLabel: 'My App',
+    ...overrides,
+  };
+}
+
 describe('buildMenuItems', () => {
   it('returns a separator + "Link to Cloudways" when no mapping exists', () => {
     const site = makeSite();
@@ -35,41 +45,27 @@ describe('buildMenuItems', () => {
 
   it('returns push + pull items when mapped', () => {
     const site = makeSite();
-    const mapping: SiteMapping = {
-      siteId: site.id,
-      serverId: 100,
-      appId: 200,
-    };
-    const items = buildMenuItems(site, mapping);
+    const items = buildMenuItems(site, makeMapping(site));
 
     const labels = items.map((i) => i.label).filter(Boolean);
     expect(labels).toContain('Push to Cloudways\u2026');
     expect(labels).toContain('Pull latest from Cloudways\u2026');
   });
 
-  it('includes "Open on Cloudways" when mapping has appFqdn', () => {
+  it('includes "Open on Cloudways" when mapping has remoteUrl', () => {
     const site = makeSite();
-    const mapping: SiteMapping = {
-      siteId: site.id,
-      serverId: 100,
-      appId: 200,
-      appFqdn: 'myapp-123456.cloudwaysapps.com',
-    };
-    const items = buildMenuItems(site, mapping);
+    const items = buildMenuItems(site, makeMapping(site, {
+      remoteUrl: 'https://myapp-123456.cloudwaysapps.com',
+    }));
 
     const openItem = items.find((i) => i.label?.includes('Open on Cloudways'));
     expect(openItem).toBeDefined();
     expect(openItem!.enabled).toBe(true);
   });
 
-  it('omits "Open on Cloudways" when mapping has no appFqdn', () => {
+  it('omits "Open on Cloudways" when mapping has no remoteUrl', () => {
     const site = makeSite();
-    const mapping: SiteMapping = {
-      siteId: site.id,
-      serverId: 100,
-      appId: 200,
-    };
-    const items = buildMenuItems(site, mapping);
+    const items = buildMenuItems(site, makeMapping(site));
 
     const openItem = items.find((i) => i.label?.includes('Open on Cloudways'));
     expect(openItem).toBeUndefined();
@@ -85,12 +81,7 @@ describe('buildMenuItems', () => {
 
   it('"Push to Cloudways" click handler does not throw', () => {
     const site = makeSite({ id: 'site-push' });
-    const mapping: SiteMapping = {
-      siteId: site.id,
-      serverId: 1,
-      appId: 2,
-    };
-    const items = buildMenuItems(site, mapping);
+    const items = buildMenuItems(site, makeMapping(makeSite({ id: 'site-push' })));
     const pushItem = items.find((i) => i.label?.includes('Push to Cloudways'));
 
     expect(() => pushItem!.click!()).not.toThrow();
@@ -99,13 +90,9 @@ describe('buildMenuItems', () => {
   it('"Open on Cloudways" click opens the app URL', () => {
     const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
     const site = makeSite();
-    const mapping: SiteMapping = {
-      siteId: site.id,
-      serverId: 1,
-      appId: 2,
-      appFqdn: 'example.cloudwaysapps.com',
-    };
-    const items = buildMenuItems(site, mapping);
+    const items = buildMenuItems(site, makeMapping(site, {
+      remoteUrl: 'https://example.cloudwaysapps.com',
+    }));
     const openItem = items.find((i) => i.label?.includes('Open on Cloudways'));
 
     openItem!.click!();
@@ -119,11 +106,7 @@ describe('buildMenuItems', () => {
     const unmapped = buildMenuItems(site, null);
     expect(unmapped[0]!.type).toBe('separator');
 
-    const mapped = buildMenuItems(site, {
-      siteId: site.id,
-      serverId: 1,
-      appId: 2,
-    });
+    const mapped = buildMenuItems(site, makeMapping(site));
     expect(mapped[0]!.type).toBe('separator');
   });
 });
@@ -131,12 +114,10 @@ describe('buildMenuItems', () => {
 describe('siteInfoMoreMenuFilter', () => {
   beforeEach(() => {
     clearMappingCache();
-    window.location.hash = '';
   });
 
   afterEach(() => {
     clearMappingCache();
-    window.location.hash = '';
   });
 
   it('appends items to the existing menu array', () => {
