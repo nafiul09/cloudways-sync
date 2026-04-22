@@ -76,7 +76,16 @@ type RequestOpts<S extends ZodTypeAny> = {
   anonymous?: boolean;
 };
 
-const DEFAULT_BASE_URL = 'https://api.cloudways.com/api/v2';
+export const CLOUDWAYS_API_V2_BASE_URL = 'https://api.cloudways.com/api/v2';
+export const CLOUDWAYS_API_ENDPOINTS = {
+  oauthAccessToken: '/oauth/access_token',
+  listServers: '/server',
+  appCredentials: '/app/creds',
+  appBackup: '/app/manage/takeBackup',
+  serverBackup: '/server/manage/takeBackup',
+  operation: '/operation',
+  whitelistedIp: '/security/whitelisted',
+} as const;
 const DEFAULT_MAX_ATTEMPTS = 4;
 const DEFAULT_BASE_DELAY_MS = 500;
 const DEFAULT_MAX_DELAY_MS = 20_000;
@@ -105,7 +114,7 @@ export class ApiClient {
   constructor(opts: ApiClientOptions) {
     this.email = opts.email;
     this.apiKey = opts.apiKey;
-    this.baseUrl = (opts.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
+    this.baseUrl = (opts.baseUrl ?? CLOUDWAYS_API_V2_BASE_URL).replace(/\/+$/, '');
     this.maxAttempts = opts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
     this.baseDelayMs = opts.baseDelayMs ?? DEFAULT_BASE_DELAY_MS;
     this.maxDelayMs = opts.maxDelayMs ?? DEFAULT_MAX_DELAY_MS;
@@ -126,7 +135,7 @@ export class ApiClient {
   async listServers(): Promise<Server[]> {
     const res = await this.call({
       method: 'GET',
-      path: '/server',
+      path: CLOUDWAYS_API_ENDPOINTS.listServers,
       schema: ServersResponseSchema,
     });
     return res.servers;
@@ -135,7 +144,7 @@ export class ApiClient {
   async getAppCreds(serverId: number, appId: number): Promise<AppCredential[]> {
     const res = await this.call({
       method: 'GET',
-      path: '/app/creds',
+      path: CLOUDWAYS_API_ENDPOINTS.appCredentials,
       query: { server_id: serverId, app_id: appId },
       schema: AppCredsResponseSchema,
     });
@@ -150,7 +159,7 @@ export class ApiClient {
   async triggerAppBackup(serverId: number, appId: number): Promise<number> {
     const res = await this.call({
       method: 'POST',
-      path: '/app/manage/takeBackup',
+      path: CLOUDWAYS_API_ENDPOINTS.appBackup,
       form: { server_id: serverId, app_id: appId },
       schema: BackupTriggerResponseSchema,
     });
@@ -160,7 +169,7 @@ export class ApiClient {
   async triggerServerBackup(serverId: number): Promise<number> {
     const res = await this.call({
       method: 'POST',
-      path: '/server/manage/takeBackup',
+      path: CLOUDWAYS_API_ENDPOINTS.serverBackup,
       form: { server_id: serverId },
       schema: OperationTriggerResponseSchema,
     });
@@ -170,8 +179,7 @@ export class ApiClient {
   async getOperation(operationId: number): Promise<Operation> {
     const res = await this.call({
       method: 'GET',
-      path: '/operation',
-      query: { id: operationId },
+      path: `${CLOUDWAYS_API_ENDPOINTS.operation}/${operationId}`,
       schema: OperationResponseSchema,
     });
     return res.operation;
@@ -210,7 +218,7 @@ export class ApiClient {
   async whitelistIp(serverId: number, ip: string, label?: string): Promise<void> {
     await this.call({
       method: 'POST',
-      path: '/security/whitelisted',
+      path: CLOUDWAYS_API_ENDPOINTS.whitelistedIp,
       form: {
         server_id: serverId,
         tab: 'ssh',
@@ -240,7 +248,7 @@ export class ApiClient {
   private async fetchToken(): Promise<OAuthToken> {
     const tok = await this.call({
       method: 'POST',
-      path: '/oauth/access_token',
+      path: CLOUDWAYS_API_ENDPOINTS.oauthAccessToken,
       form: { email: this.email, api_key: this.apiKey },
       schema: OAuthTokenSchema,
       anonymous: true,

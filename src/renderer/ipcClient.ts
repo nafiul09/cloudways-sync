@@ -16,6 +16,10 @@ import {
   type ListAppsRequest,
   type ListAppsResponse,
   type ListServersResponse,
+  type PlanPullRequest,
+  type PlanPullResponse,
+  type RunJobRequest,
+  type RunJobResponse,
   type SerializedError,
   type SmokeAppRequest,
   type SmokeAppResponse,
@@ -49,4 +53,6 @@ export const ipcClient = {
   listApps: (req: ListAppsRequest) => invoke<ListAppsResponse>(CHANNELS.LIST_APPS, req),
   getApp: (req: GetAppRequest) => invoke<GetAppResponse>(CHANNELS.GET_APP, req),
   smokeApp: (req: SmokeAppRequest) => invoke<SmokeAppResponse>(CHANNELS.SMOKE_APP, req),
+  planPull: (req: PlanPullRequest) => invoke<PlanPullResponse>(CHANNELS.PLAN_PULL, req),
+  runJob: (req: RunJobRequest) => invoke<RunJobResponse>(CHANNELS.RUN_JOB, req),
 };

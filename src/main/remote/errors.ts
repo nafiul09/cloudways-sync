@@ -111,9 +111,13 @@ export const SftpFailed = (operation: string, cause: unknown) =>
 export const WpCliFailed = (args: string[], code: number, stderr: string) =>
   new RemoteError(
     'WPCLI_FAILED',
-    `wp ${args.join(' ')} exited with code ${code}.`,
+    `wp ${args.join(' ')} exited with code ${code}${firstStderrLine(stderr) ? `: ${firstStderrLine(stderr)}` : ''}.`,
     { retriable: false, detail: { args, code, stderr } },
   );
+
+function firstStderrLine(stderr: string): string {
+  return stderr.trim().split(/\r?\n/, 1)[0]?.trim() ?? '';
+}
 
 export const WpCliNotInstalled = (detail?: unknown) =>
   new RemoteError(

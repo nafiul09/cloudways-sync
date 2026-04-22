@@ -45,17 +45,17 @@ describe('cloudwaysAppPublicPath', () => {
 });
 
 describe('buildWpCommand', () => {
-  it('prepends wp and --path', () => {
+  it('cds into the install path and runs wp with --path=.', () => {
     const cmd = buildWpCommand('/home/master/applications/u/public_html', ['option', 'get', 'home']);
     expect(cmd).toBe(
-      "wp --path=/home/master/applications/u/public_html option get home",
+      "cd /home/master/applications/u/public_html && wp --path=. option get home",
     );
   });
 
   it('escapes args containing spaces', () => {
     const cmd = buildWpCommand('/app', ['search-replace', 'foo bar', 'baz qux']);
     expect(cmd).toBe(
-      "wp --path=/app search-replace 'foo bar' 'baz qux'",
+      "cd /app && wp --path=. search-replace 'foo bar' 'baz qux'",
     );
   });
 });

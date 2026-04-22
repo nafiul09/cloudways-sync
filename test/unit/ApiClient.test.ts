@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Readable } from 'node:stream';
-import { ApiClient } from '../../src/main/cloudways/ApiClient';
+import { ApiClient, CLOUDWAYS_API_ENDPOINTS, CLOUDWAYS_API_V2_BASE_URL } from '../../src/main/cloudways/ApiClient';
 import { CloudwaysError } from '../../src/main/cloudways/errors';
 import {
   appCredsResponse,
@@ -113,6 +113,41 @@ describe('ApiClient OAuth', () => {
   });
 });
 
+describe('ApiClient Cloudways API v2 routing', () => {
+  it('builds every Cloudways request against the v2 base URL', async () => {
+    const { impl, calls } = makeFetchMock([
+      () => fakeResponse(200, oauthTokenResponse),
+      () => fakeResponse(200, serversResponse),
+      () => fakeResponse(200, appCredsResponse),
+      () => fakeResponse(200, operationTriggerResponse),
+      () => fakeResponse(200, operationTriggerResponse),
+      () => fakeResponse(200, operationProcessingResponse),
+      () => fakeResponse(200, { status: true }),
+    ]);
+    const client = makeClient(impl);
+
+    await client.verifyCredentials();
+    await client.listServers();
+    await client.getAppCreds(12345, 67890);
+    await client.triggerAppBackup(12345, 67890);
+    await client.triggerServerBackup(12345);
+    await client.getOperation(555666);
+    await client.whitelistIp(12345, '203.0.113.44');
+
+    expect(calls.map((c) => c.url)).toEqual([
+      `${CLOUDWAYS_API_V2_BASE_URL}${CLOUDWAYS_API_ENDPOINTS.oauthAccessToken}`,
+      `${CLOUDWAYS_API_V2_BASE_URL}${CLOUDWAYS_API_ENDPOINTS.listServers}`,
+      `${CLOUDWAYS_API_V2_BASE_URL}${CLOUDWAYS_API_ENDPOINTS.appCredentials}?server_id=12345&app_id=67890`,
+      `${CLOUDWAYS_API_V2_BASE_URL}${CLOUDWAYS_API_ENDPOINTS.appBackup}`,
+      `${CLOUDWAYS_API_V2_BASE_URL}${CLOUDWAYS_API_ENDPOINTS.serverBackup}`,
+      `${CLOUDWAYS_API_V2_BASE_URL}${CLOUDWAYS_API_ENDPOINTS.operation}/555666`,
+      `${CLOUDWAYS_API_V2_BASE_URL}${CLOUDWAYS_API_ENDPOINTS.whitelistedIp}`,
+    ]);
+    expect(calls.every((c) => c.url.startsWith(`${CLOUDWAYS_API_V2_BASE_URL}/`))).toBe(true);
+    expect(calls.some((c) => c.url.includes('/api/v1'))).toBe(false);
+  });
+});
+
 describe('ApiClient retries', () => {
   it('retries 5xx up to maxAttempts then throws HTTP_5XX', async () => {
     const { impl } = makeFetchMock([
@@ -187,7 +222,7 @@ describe('ApiClient schema validation', () => {
 });
 
 describe('ApiClient app creds', () => {
-  it('passes server_id and app_id as query string', async () => {
+  it('passes server_id and app_id as query string and normalizes sys_password', async () => {
     const { impl, calls } = makeFetchMock([
       () => fakeResponse(200, oauthTokenResponse),
       () => fakeResponse(200, appCredsResponse),
@@ -195,6 +230,7 @@ describe('ApiClient app creds', () => {
     const client = makeClient(impl);
     const creds = await client.getAppCreds(12345, 67890);
     expect(creds[0]?.sys_user).toBe('app_user_xyz');
+    expect(creds[0]?.password).toBe('secret-password');
     expect(calls[1]?.url).toMatch(/server_id=12345/);
     expect(calls[1]?.url).toMatch(/app_id=67890/);
   });
@@ -246,6 +282,24 @@ describe('ApiClient operation polling', () => {
     await expect(
       client.waitForOperation(555666, { pollIntervalMs: 0, timeoutMs: 1 }),
     ).rejects.toMatchObject({ code: 'OPERATION_TIMEOUT' });
+  });
+
+  it('treats is_completed without status as terminal success', async () => {
+    const { impl } = makeFetchMock([
+      () => fakeResponse(200, oauthTokenResponse),
+      () =>
+        fakeResponse(200, {
+          operation: {
+            id: '555666',
+            is_completed: '1',
+            type: 'app_level_backup',
+            parameters: '{"message":"completed"}',
+          },
+        }),
+    ]);
+    const client = makeClient(impl);
+    const op = await client.waitForOperation(555666, { pollIntervalMs: 0 });
+    expect(op.is_completed).toBe(1);
   });
 
   it('normalises both trigger response shapes into an operation id', async () => {

@@ -348,12 +348,17 @@ function AppDetailView({
   const [detail, setDetail] = useState<AppDetailPayload | undefined>();
   const [err, setErr] = useState<string | undefined>();
   const [reveal, setReveal] = useState(false);
+  const [pullBusy, setPullBusy] = useState(false);
+  const [pullResult, setPullResult] = useState<string | undefined>();
+  const [pullErr, setPullErr] = useState<string | undefined>();
 
   useEffect(() => {
     let cancelled = false;
     setDetail(undefined);
     setErr(undefined);
     setReveal(false);
+    setPullResult(undefined);
+    setPullErr(undefined);
     ipcClient
       .getApp({ serverId, appId })
       .then((res) => {
@@ -377,6 +382,24 @@ function AppDetailView({
   }
 
   const primaryUrl = detail.appFqdn ? `https://${detail.appFqdn}` : null;
+  const runPull = async () => {
+    setPullBusy(true);
+    setPullResult(undefined);
+    setPullErr(undefined);
+    try {
+      const plan = await ipcClient.planPull({
+        serverId: detail.serverId,
+        appId: detail.id,
+        destinationName: detail.label,
+      });
+      const job = await ipcClient.runJob({ planId: plan.planId });
+      setPullResult(job.localUrl ? `Pulled into Local: ${job.localUrl}` : 'Pull completed.');
+    } catch (e) {
+      setPullErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPullBusy(false);
+    }
+  };
 
   return (
     <div>
@@ -389,6 +412,24 @@ function AppDetailView({
           {detail.server.region ? ` · ${detail.server.region}` : ''}
         </div>
       </div>
+
+      {detail.isWordPress && (
+        <div style={styles.actionBar}>
+          <Button onClick={runPull} disabled={pullBusy}>
+            {pullBusy ? 'Pulling…' : 'Pull to Local'}
+          </Button>
+        </div>
+      )}
+      {pullErr && (
+        <div style={styles.banner}>
+          <Banner variant="error">{pullErr}</Banner>
+        </div>
+      )}
+      {pullResult && (
+        <div style={styles.banner}>
+          <Banner variant="success">{pullResult}</Banner>
+        </div>
+      )}
 
       {!detail.isWordPress && (
         <div style={styles.banner}>
@@ -652,6 +693,11 @@ const styles: Record<string, React.CSSProperties> = {
     marginTop: 6,
     fontSize: 12.5,
     opacity: 0.6,
+  },
+  actionBar: {
+    display: 'flex',
+    justifyContent: 'flex-start',
+    marginBottom: 16,
   },
   banner: {
     marginBottom: 16,

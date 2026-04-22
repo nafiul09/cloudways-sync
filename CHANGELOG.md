@@ -55,3 +55,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     connect + disconnect, and IPC handler input validation + error
     serialization.
 
+### Changed
+- Made Cloudways API v2 routing explicit with exported base URL and
+  endpoint constants, plus a regression test that verifies every
+  `ApiClient` request targets `/api/v2`.
+- Updated the implementation plan's Cloudways endpoint table to match
+  the v2 paths used by the client.
+- Phase 5 pull foundation:
+  - Added `cs:planPull`, `cs:runJob`, and `cs:cancelJob` IPC handlers.
+  - Added `PullOrchestrator` for the full non-selective pull sequence:
+    Cloudways app backup, SSH metadata, remote DB export/gzip, SFTP DB
+    and `wp-content` download, manifest writing, and Local import.
+  - Added `LocalSiteImporter` using Local's `addSite`,
+    `siteProcessManager`, and `wpCli` services.
+  - Added a WordPress app "Pull to Local" action in the fleet detail
+    pane.
+  - Added an orchestrator unit test covering the Phase 5 pull sequence
+    with mocked Cloudways, SSH/SFTP, and Local importer boundaries.

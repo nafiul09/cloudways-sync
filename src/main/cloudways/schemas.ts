@@ -54,14 +54,21 @@ export const ServersResponseSchema = z.object({
 export type ServersResponse = z.infer<typeof ServersResponseSchema>;
 
 // ---- App credentials (SFTP + DB) ----
-// Cloudways exposes app master creds via `GET /app/creds`; the exact
-// field shape is documented as a list of credential records per app.
-export const AppCredentialSchema = z.object({
-  id: z.coerce.number().int(),
-  sys_user: z.string(),
-  ssh_keys: z.array(z.unknown()).optional(),
-  password: z.string().optional(),
-});
+// Cloudways exposes app credentials via `GET /app/creds`. The API
+// returns the system password as `sys_password`; we normalize it to
+// `password` at the boundary so the rest of the app has one shape.
+export const AppCredentialSchema = z
+  .object({
+    id: z.coerce.number().int(),
+    sys_user: z.string(),
+    ssh_keys: z.array(z.unknown()).optional(),
+    sys_password: z.string().optional(),
+    password: z.string().optional(),
+  })
+  .transform(({ sys_password, password, ...rest }) => ({
+    ...rest,
+    password: password ?? sys_password,
+  }));
 export type AppCredential = z.infer<typeof AppCredentialSchema>;
 
 export const AppCredsResponseSchema = z.object({
@@ -71,9 +78,10 @@ export type AppCredsResponse = z.infer<typeof AppCredsResponseSchema>;
 
 // ---- Operation polling ----
 // Cloudways async endpoints return `{ operation_id }`, which we then
-// poll via `GET /operation/{id}`. The `status` field settles on one
-// of `Completed` / `Failed` / `Cancelled`.
+// poll via `GET /operation/<operation_id>`. Some completed operations
+// omit `status` and only return `is_completed`.
 export const OperationTriggerResponseSchema = z.object({
+  status: z.boolean().optional(),
   operation_id: z.coerce.number().int().positive(),
 });
 export type OperationTriggerResponse = z.infer<typeof OperationTriggerResponseSchema>;
@@ -90,9 +98,10 @@ export type OperationStatus = z.infer<typeof OperationStatusSchema>;
 export const OperationSchema = z.object({
   id: z.coerce.number().int(),
   type: z.string().optional(),
-  status: OperationStatusSchema.or(z.string()), // tolerate unseen values
+  status: OperationStatusSchema.or(z.string()).optional(), // tolerate unseen values and missing completed status
   is_completed: z.union([z.boolean(), z.coerce.number()]).optional(),
   message: z.string().optional(),
+  parameters: z.string().optional(),
   estimated_time_remaining: z.coerce.number().optional(),
 });
 export type Operation = z.infer<typeof OperationSchema>;
@@ -111,9 +120,10 @@ export type BackupTriggerResponse = z.infer<typeof BackupTriggerResponseSchema>;
 
 // ---- Useful narrow helpers ----
 export function isTerminalOperation(op: Operation): boolean {
-  return op.status === 'Completed' || op.status === 'Failed' || op.status === 'Cancelled';
+  return op.status === 'Completed' || op.status === 'Failed' || op.status === 'Cancelled' || op.is_completed === true || op.is_completed === 1;
 }
 
 export function isSuccessfulOperation(op: Operation): boolean {
-  return op.status === 'Completed';
+  if (op.status === 'Failed' || op.status === 'Cancelled') return false;
+  return op.status === 'Completed' || op.is_completed === true || op.is_completed === 1;
 }

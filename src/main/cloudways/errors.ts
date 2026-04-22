@@ -107,7 +107,14 @@ export const OperationTimeout = (operationId: number, waitedMs: number) =>
   );
 
 export const SchemaInvalid = (detail: unknown) =>
-  new CloudwaysError('SCHEMA_INVALID', 'Cloudways response did not match expected schema.', {
+  new CloudwaysError('SCHEMA_INVALID', schemaInvalidMessage(detail), {
     retriable: false,
     detail,
   });
+
+function schemaInvalidMessage(detail: unknown): string {
+  const firstIssue = (detail as { issues?: Array<{ path?: Array<string | number>; message?: string }> })?.issues?.[0];
+  if (!firstIssue) return 'Cloudways response did not match expected schema.';
+  const path = firstIssue.path?.length ? firstIssue.path.join('.') : 'response';
+  return `Cloudways response did not match expected schema at ${path}: ${firstIssue.message ?? 'invalid value'}.`;
+}

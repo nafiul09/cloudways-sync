@@ -6,8 +6,10 @@
 // Conventions:
 //   - App public path: /home/master/applications/<app_user>/public_html
 //     (the app_user is the per-app sub-account, not the master SFTP user).
-//   - Commands run with `--path=…` to pin the WP install directory;
-//     this is more reliable than `cd …` across SFTP shells.
+//   - Commands `cd` into the WP install directory and also pass
+//     `--path=.`. Some Cloudways wp-config.php files require sibling
+//     files with relative paths (for example `wp-salt.php`), so
+//     `--path=/absolute/path` alone is not enough.
 //   - We never pass shell metacharacters; args are shell-escaped.
 
 import type { ExecOptions, ExecResult, SshClient } from './SshClient';
@@ -33,8 +35,8 @@ export function shellQuote(arg: string): string {
 
 /** Build a full `wp …` command string with `--path=` and quoted args. */
 export function buildWpCommand(appPublicPath: string, args: string[]): string {
-  const parts = ['wp', `--path=${shellQuote(appPublicPath)}`, ...args.map(shellQuote)];
-  return parts.join(' ');
+  const parts = ['wp', '--path=.', ...args.map(shellQuote)];
+  return `cd ${shellQuote(appPublicPath)} && ${parts.join(' ')}`;
 }
 
 /** Run one wp-cli command. Returns the raw ExecResult. Throws

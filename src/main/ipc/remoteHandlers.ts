@@ -88,7 +88,7 @@ export function registerRemoteHandlers({
       const host = server.public_ip ?? server.server_fqdn;
       const username = primary?.sys_user ?? app.sys_user;
       const password = primary?.password;
-      const appUser = app.app_user;
+      const appUser = app.sys_user ?? primary?.sys_user;
 
       if (!host) {
         throw new RemoteError('SSH_NETWORK', 'Cloudways did not return a server address.', {
@@ -103,14 +103,14 @@ export function registerRemoteHandlers({
       if (!password) {
         throw new RemoteError(
           'SSH_AUTH_FAILED',
-          'No password available. This app may be ssh-key-only; v1 needs password auth.',
+          'No password available. This app may be ssh-key-only; the current smoke test needs password auth.',
           { retriable: false },
         );
       }
       if (!appUser) {
         throw new RemoteError(
           'SSH_COMMAND_FAILED',
-          'App is missing app_user; cannot locate public_html.',
+          'App is missing sys_user; cannot locate public_html.',
           { retriable: false },
         );
       }

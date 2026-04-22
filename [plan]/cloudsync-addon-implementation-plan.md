@@ -356,11 +356,12 @@ companion research doc.
 | OAuth token | `POST /oauth/access_token` | Connect |
 | List servers | `GET /server` | Dashboard |
 | Get server detail (incl. apps) | included in `/server` list | App picker |
-| Get app access details (SFTP, DB) | `GET /app/creds/{server_id}/{app_id}` (equivalent) | Pull + Push setup |
-| Trigger server backup | `POST /server/backup` | Safety (push) |
-| Poll operation | `GET /operation/{id}` | Every async call |
+| Get app access details (SFTP, DB) | `GET /app/creds?server_id={server_id}&app_id={app_id}` | Pull + Push setup |
+| Trigger app backup | `POST /app/manage/takeBackup` | Safety (pull) |
+| Trigger server backup | `POST /server/manage/takeBackup` | Safety (push) |
+| Poll operation | `GET /operation/{operation_id}` | Every async call |
 | Restore app (point-in-time) | `POST /app/restore` | Undo push |
-| Whitelist IP for SSH | `POST /server/security/whitelisted` (`tab=ssh`) | If needed for SSH from a new IP |
+| Whitelist IP for SSH | `POST /security/whitelisted` (`tab=ssh`) | If needed for SSH from a new IP |
 | Create app | `POST /app` (Mode B) | New-app push |
 | Delete app | `DELETE /app` | Rollback failed Mode B push |
 | Update DB password | `POST /app/creds` (update) | Only if needed during troubleshooting |
@@ -383,8 +384,8 @@ emits progress.
    enabled, add local public IP via API. Record so we can revoke on
    completion.
 3. **Trigger Cloudways app backup** — safety net for the *source*,
-   even though we're reading. `POST /server/backup` then
-   poll `/operation/{id}`.
+   even though we're reading. `POST /app/manage/takeBackup` then
+   poll `GET /operation/{operation_id}`.
 4. **SSH connect** — open persistent SSH session using master SSH key
    (or credentials returned by API).
 5. **Collect source metadata** via WP-CLI:
@@ -429,7 +430,7 @@ it** so the user can choose delete or keep for inspection.
      WordPress major mismatch).
    - Disk space on remote `/home/master/applications/<app>/` > 2× local
      export size.
-2. **Remote safety backup** — `POST /server/backup`, poll, record
+2. **Remote safety backup** — `POST /server/manage/takeBackup`, poll, record
    `operationId` and timestamp → `UndoRecord.remoteBackupTimestamp`.
 3. **Local safety snapshot** — tar + gzip `site.paths.webRoot` + a
    fresh `wp db export` into

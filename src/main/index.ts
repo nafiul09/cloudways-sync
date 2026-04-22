@@ -6,7 +6,7 @@
 
 import path from 'node:path';
 import type { AddonMainContext } from '@getflywheel/local/main';
-import { addIpcAsyncListener } from '@getflywheel/local/main';
+import { addIpcAsyncListener, getServiceContainer, sendIPCEvent } from '@getflywheel/local/main';
 import type { IpcMainEvent } from 'electron';
 import { app, safeStorage } from 'electron';
 import { ConnectionService } from './connection/service';
@@ -14,6 +14,7 @@ import { CredentialStore } from './credentials';
 import { registerConnectionHandlers } from './ipc/handlers';
 import { registerFleetHandlers } from './ipc/fleetHandlers';
 import { registerRemoteHandlers } from './ipc/remoteHandlers';
+import { registerSyncHandlers } from './ipc/syncHandlers';
 import { PING_CHANNEL, type PingRequest, type PingResponse } from '../shared/ipcTypes';
 
 export default function register(context: AddonMainContext): void {
@@ -36,6 +37,14 @@ export default function register(context: AddonMainContext): void {
   registerConnectionHandlers({ addIpcAsyncListener, connection });
   registerFleetHandlers({ addIpcAsyncListener, connection });
   registerRemoteHandlers({ addIpcAsyncListener, connection });
+  const services = getServiceContainer().cradle;
+  registerSyncHandlers({
+    addIpcAsyncListener,
+    connection,
+    services,
+    userDataDir: app.getPath('userData'),
+    sendIPCEvent,
+  });
 
   // Legacy Phase 0 ping — kept as a cheap smoke channel.
   ipcMain.on(PING_CHANNEL, (event: IpcMainEvent, payload: PingRequest) => {

@@ -146,3 +146,54 @@ export type SmokeAppResponse = {
   /** Milliseconds elapsed for the whole round-trip. */
   elapsedMs: number;
 };
+
+// --- Phase 5: Pull planning + execution ---
+
+export type PullIncludes = {
+  database: boolean;
+  wpContent: boolean;
+};
+
+export type PlanPullRequest = {
+  serverId: number;
+  appId: number;
+  destinationName: string;
+  includes?: Partial<PullIncludes>;
+};
+
+export type SyncStepStatus = 'pending' | 'running' | 'success' | 'failed' | 'skipped';
+
+export type SyncStep = {
+  id: string;
+  label: string;
+  status: SyncStepStatus;
+};
+
+export type PlanPullResponse = {
+  planId: string;
+  steps: SyncStep[];
+};
+
+export type RunJobRequest = { planId: string };
+
+export type RunJobResponse = {
+  jobId: string;
+  status: 'success' | 'failed' | 'cancelled';
+  localSiteId?: string;
+  localUrl?: string;
+  manifestPath?: string;
+};
+
+export type CancelJobRequest = { jobId: string };
+export type CancelJobResponse = { cancelled: boolean };
+
+export type JobProgressEvent = {
+  jobId: string;
+  stepId: string;
+  status: SyncStepStatus;
+  detail?: string;
+  bytesTransferred?: number;
+  totalBytes?: number;
+};
+
+export type JobDoneEvent = RunJobResponse;

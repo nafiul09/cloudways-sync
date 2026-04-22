@@ -52,12 +52,13 @@ export const appCredsResponse = {
       id: '1',
       sys_user: 'app_user_xyz',
       ssh_keys: [],
-      password: 'secret-password',
+      sys_password: 'secret-password',
     },
   ],
 };
 
 export const operationTriggerResponse = {
+  status: true,
   operation_id: '555666',
 };
 
