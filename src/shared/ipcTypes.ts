@@ -205,3 +205,76 @@ export type JobProgressEvent = {
 };
 
 export type JobDoneEvent = RunJobResponse;
+
+// --- Phase 7: Push planning + execution ---
+
+export type PushIncludes = PullIncludes; // same granularity for push
+
+export type PlanPushRequest = {
+  serverId: number;
+  /** Set to 0 for Mode B (new app provisioning). */
+  appId: number;
+  /** The Local site ID (from Local's site registry). */
+  localSiteId: string;
+  /** The local site's URL (e.g. http://buildpress.local). */
+  localUrl: string;
+  /** Absolute path to the Local site's webRoot (app/public). */
+  webRootPath: string;
+  includes?: Partial<PushIncludes>;
+  /** For Mode B: label for the new Cloudways app. Required when appId is 0. */
+  newAppLabel?: string;
+};
+
+export type PlanPushResponse = {
+  planId: string;
+  steps: SyncStep[];
+};
+
+// --- Phase 7: Undo ---
+
+export type UndoRecord = {
+  id: string;
+  jobId: string;
+  serverId: number;
+  appId: number;
+  appLabel: string;
+  /** Cloudways backup timestamp used for restore. */
+  remoteBackupTimestamp?: string;
+  /** Path to local safety snapshot (tar.gz). */
+  localSnapshotPath?: string;
+  /** Push source URL (local .local URL). */
+  sourceUrl: string;
+  /** Push target URL (remote production URL). */
+  targetUrl: string;
+  createdAt: string;
+  undoneAt?: string;
+};
+
+export type ListUndoRequest = Record<string, never>;
+export type ListUndoResponse = { records: UndoRecord[] };
+
+export type UndoPushRequest = { recordId: string };
+export type UndoPushResponse = { restored: boolean };
+
+// --- Phase 8: Site mapping ---
+
+export type SiteMapping = {
+  localSiteId: string;
+  serverId: number;
+  appId: number;
+  appLabel: string;
+  remoteUrl: string;
+  createdAt: string;
+};
+
+export type MapSiteRequest = {
+  localSiteId: string;
+  serverId: number;
+  appId: number;
+  appLabel: string;
+  remoteUrl: string;
+};
+export type MapSiteResponse = { mapping: SiteMapping };
+
+export type GetMappingRequest = { localSiteId: string };
+export type GetMappingResponse = { mapping: SiteMapping | null };

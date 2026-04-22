@@ -5,6 +5,25 @@ All notable changes to CloudwaysSync will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.0 — 2026-04-23
+
+### Added
+- Cloudways API client with OAuth, retry, and rate-limiting
+- Secure credential storage via Electron safeStorage
+- Server and app browser with credential display
+- SSH and SFTP clients with timeout and stall detection
+- Pull: clone any Cloudways WordPress app to a new Local site
+- Selective sync: checkboxes for database, uploads, plugins, themes, mu-plugins, languages
+- Archive-based transfer (tar on server, single download, local extract)
+- Push Mode A: push Local site changes to an existing Cloudways app
+- Push Mode B infrastructure: create new Cloudways app from Local site
+- Undo push: restore remote site to pre-push backup
+- Per-site menu integration ("Push to Cloudways", "Pull from Cloudways")
+- Live progress UI with step labels and percentage display
+- Safety backups before every push operation
+- Humanized error messages for all error codes (errorMessages.ts)
+- Build script for Add-on Library zip distribution (scripts/build-addon-zip.mjs)
+
 ## [Unreleased]
 
 ### Added

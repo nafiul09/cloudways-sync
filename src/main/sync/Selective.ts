@@ -57,7 +57,7 @@ export function tarExcludeFlags(includes: PullIncludes): string {
     .join(' ');
 }
 
-/** Whether a given orchestrator step should be skipped entirely. */
+/** Whether a given pull orchestrator step should be skipped entirely. */
 export function shouldSkipStep(stepId: string, includes: PullIncludes): boolean {
   switch (stepId) {
     case 'db-export':
@@ -71,6 +71,21 @@ export function shouldSkipStep(stepId: string, includes: PullIncludes): boolean 
       return !includes.database;
     case 'search-replace':
       return !includes.database;
+    default:
+      return false;
+  }
+}
+
+/** Whether a given push orchestrator step should be skipped entirely. */
+export function shouldSkipPushStep(stepId: string, includes: PullIncludes): boolean {
+  switch (stepId) {
+    case 'local-export-db':
+    case 'upload-db':
+    case 'remote-db-import':
+    case 'search-replace':
+      return !includes.database;
+    case 'upload-content':
+      return !includes.wpContent;
     default:
       return false;
   }

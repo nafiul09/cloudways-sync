@@ -84,7 +84,11 @@ export const CLOUDWAYS_API_ENDPOINTS = {
   appBackup: '/app/manage/takeBackup',
   serverBackup: '/server/manage/takeBackup',
   operation: '/operation',
+  restoreApp: '/app/manage/restore',
+  varnishPurge: '/service/varnish',
   whitelistedIp: '/security/whitelisted',
+  createApp: '/app',
+  deleteApp: '/app',
 } as const;
 const DEFAULT_MAX_ATTEMPTS = 4;
 const DEFAULT_BASE_DELAY_MS = 500;
@@ -212,6 +216,49 @@ export class ApiClient {
       }
       await this.sleep(pollIntervalMs);
     }
+  }
+
+  /** Restore a Cloudways app from a backup. Used for "undo push". */
+  async restoreApp(serverId: number, appId: number): Promise<number> {
+    const res = await this.call({
+      method: 'POST',
+      path: CLOUDWAYS_API_ENDPOINTS.restoreApp,
+      form: { server_id: serverId, app_id: appId },
+      schema: OperationTriggerResponseSchema,
+    });
+    return res.operation_id;
+  }
+
+  /** Purge Varnish cache for a server (best-effort post-push). */
+  async purgeVarnish(serverId: number): Promise<void> {
+    await this.call({
+      method: 'POST',
+      path: CLOUDWAYS_API_ENDPOINTS.varnishPurge,
+      form: { server_id: serverId, action: 'purge' },
+      schema: z.unknown(),
+    }).catch(() => undefined); // best-effort
+  }
+
+  /** Create a new WordPress app on a Cloudways server. Returns an operation_id to poll. */
+  async createApp(serverId: number, appLabel: string, application = 'wordpress'): Promise<number> {
+    const res = await this.call({
+      method: 'POST',
+      path: CLOUDWAYS_API_ENDPOINTS.createApp,
+      form: { server_id: serverId, application, app_label: appLabel },
+      schema: OperationTriggerResponseSchema,
+    });
+    return res.operation_id;
+  }
+
+  /** Delete a Cloudways app. Returns an operation_id to poll. */
+  async deleteApp(serverId: number, appId: number): Promise<number> {
+    const res = await this.call({
+      method: 'DELETE',
+      path: `${CLOUDWAYS_API_ENDPOINTS.deleteApp}/${appId}`,
+      form: { server_id: serverId, app_id: appId },
+      schema: OperationTriggerResponseSchema,
+    });
+    return res.operation_id;
   }
 
   /** Whitelist an IP for SSH/SFTP on a server. */
