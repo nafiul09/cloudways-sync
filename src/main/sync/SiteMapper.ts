@@ -20,6 +20,11 @@ export class SiteMapper {
     return mappings.find((m) => m.localSiteId === localSiteId) ?? null;
   }
 
+  async getByApp(serverId: number, appId: number): Promise<SiteMapping | null> {
+    const mappings = await this.list();
+    return mappings.find((m) => m.serverId === serverId && m.appId === appId) ?? null;
+  }
+
   async set(mapping: SiteMapping): Promise<void> {
     const mappings = await this.list();
     const idx = mappings.findIndex((m) => m.localSiteId === mapping.localSiteId);

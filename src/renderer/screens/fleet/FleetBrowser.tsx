@@ -25,6 +25,7 @@ import type {
   PullIncludes,
   PushIncludes,
   ServerSummary,
+  SiteMapping,
   UndoRecord,
 } from '../../../shared/ipcTypes';
 
@@ -426,6 +427,8 @@ function AppDetailView({
   const [undoErr, setUndoErr] = useState<string | undefined>();
   // Which sync direction is the panel for ('pull' | 'push')
   const [syncMode, setSyncMode] = useState<'pull' | 'push'>('pull');
+  // Site mapping for this CW app (set after pull or from existing mapping)
+  const [appMapping, setAppMapping] = useState<SiteMapping | null>(null);
 
   // Subscribe to JOB_PROGRESS so buttons can surface which step is
   // currently running. Handles both pull and push progress events.
@@ -458,6 +461,7 @@ function AppDetailView({
     setReveal(false);
     setPullResult(undefined);
     setPullErr(undefined);
+    setAppMapping(null);
     ipcClient
       .getApp({ serverId, appId })
       .then((res) => {
@@ -466,6 +470,13 @@ function AppDetailView({
       .catch((e: IpcCallError) => {
         if (!cancelled) setErr(e.message);
       });
+    // Also look up whether a Local site is linked to this CW app
+    ipcClient
+      .getMappingByApp({ serverId, appId })
+      .then((res) => {
+        if (!cancelled) setAppMapping(res.mapping);
+      })
+      .catch(() => { /* non-fatal */ });
     return () => {
       cancelled = true;
     };
@@ -495,6 +506,13 @@ function AppDetailView({
       });
       const job = await ipcClient.runJob({ planId: plan.planId });
       setPullResult(job.localUrl ? `Pulled into Local: ${job.localUrl}` : 'Pull completed.');
+      // Refresh the mapping — pull creates one automatically
+      if (job.localSiteId) {
+        ipcClient
+          .getMappingByApp({ serverId: detail.serverId, appId: detail.id })
+          .then((res) => setAppMapping(res.mapping))
+          .catch(() => { /* non-fatal */ });
+      }
     } catch (e) {
       setPullErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -521,6 +539,10 @@ function AppDetailView({
       : undefined;
 
   const runPush = async () => {
+    if (!appMapping?.localSiteId || !appMapping?.localUrl || !appMapping?.webRootPath) {
+      setPushErr('No Local site is linked to this Cloudways app. Pull first to create the link.');
+      return;
+    }
     setPushBusy(true);
     setPushResult(undefined);
     setPushErr(undefined);
@@ -530,9 +552,9 @@ function AppDetailView({
       const plan = await ipcClient.planPush({
         serverId: detail.serverId,
         appId: detail.id,
-        localSiteId: '', // placeholder — we don't have a local site picker yet
-        localUrl: '', // filled by user or from mapping
-        webRootPath: '', // filled by user or from mapping
+        localSiteId: appMapping.localSiteId,
+        localUrl: appMapping.localUrl,
+        webRootPath: appMapping.webRootPath,
         includes: pushIncludes,
       });
       const job = await ipcClient.runJob({ planId: plan.planId });
@@ -640,8 +662,13 @@ function AppDetailView({
 
           {syncMode === 'push' && (
             <>
+              {!appMapping && (
+                <Banner variant="neutral" style={{ marginBottom: 12 }}>
+                  Pull this app to Local first — that creates the link needed for push.
+                </Banner>
+              )}
               <div style={styles.actionBar}>
-                <Button onClick={runPush} disabled={pushBusy || pullBusy}>
+                <Button onClick={runPush} disabled={pushBusy || pullBusy || !appMapping}>
                   {pushLabel}
                 </Button>
                 {lastPushUndoId && !pushBusy && (

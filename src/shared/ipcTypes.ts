@@ -33,6 +33,7 @@ export const CHANNELS = {
   // Site mapping
   MAP_SITE: 'cs:mapSite',
   GET_MAPPING: 'cs:getMapping',
+  GET_MAPPING_BY_APP: 'cs:getMappingByApp',
 } as const;
 
 export type ChannelName = (typeof CHANNELS)[keyof typeof CHANNELS];
@@ -189,6 +190,7 @@ export type RunJobResponse = {
   status: 'success' | 'failed' | 'cancelled';
   localSiteId?: string;
   localUrl?: string;
+  webRootPath?: string;
   manifestPath?: string;
 };
 
@@ -265,6 +267,10 @@ export type SiteMapping = {
   appLabel: string;
   remoteUrl: string;
   createdAt: string;
+  /** Local site URL (e.g. http://my-site.local). Set after pull. */
+  localUrl?: string;
+  /** Absolute path to Local site's webRoot (e.g. .../app/public). Set after pull. */
+  webRootPath?: string;
 };
 
 export type MapSiteRequest = {
@@ -278,3 +284,6 @@ export type MapSiteResponse = { mapping: SiteMapping };
 
 export type GetMappingRequest = { localSiteId: string };
 export type GetMappingResponse = { mapping: SiteMapping | null };
+
+export type GetMappingByAppRequest = { serverId: number; appId: number };
+export type GetMappingByAppResponse = { mapping: SiteMapping | null };
