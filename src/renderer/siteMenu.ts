@@ -22,14 +22,15 @@ export interface SiteMenuItem {
 }
 
 /**
- * Mapping stored by `cs:getMapping`. When a Local site is linked to a
- * Cloudways app, this record exists.
+ * Subset of the real SiteMapping used by the menu. We only need
+ * enough to decide which items to show and what URLs to open.
  */
 export interface SiteMapping {
-  siteId: string;
+  localSiteId: string;
   serverId: number;
   appId: number;
-  appFqdn?: string;
+  appLabel: string;
+  remoteUrl?: string;
 }
 
 /**
@@ -40,8 +41,8 @@ export interface SiteMapping {
  */
 async function fetchMapping(siteId: string): Promise<SiteMapping | null> {
   try {
-    const result = await ipcAsync(CHANNELS.GET_MAPPING, { siteId });
-    if (result?.ok && result.data) return result.data as SiteMapping;
+    const result = await ipcAsync(CHANNELS.GET_MAPPING, { localSiteId: siteId });
+    if (result?.ok && result.data?.localSiteId) return result.data as SiteMapping;
     return null;
   } catch {
     return null;
@@ -78,13 +79,12 @@ export function buildMenuItems(
       },
     });
 
-    if (mapping.appFqdn) {
+    if (mapping.remoteUrl) {
       items.push({
         label: 'Open on Cloudways \u2197',
         enabled: true,
         click: () => {
-          const url = `https://${mapping.appFqdn}`;
-          window.open(url, '_blank');
+          window.open(mapping.remoteUrl as string, '_blank');
         },
       });
     }
