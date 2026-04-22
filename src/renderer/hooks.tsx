@@ -4,7 +4,6 @@ import type { AddonSettingsItem, PreferencesSection } from '@getflywheel/local/r
 import type { Site } from '@getflywheel/local';
 import { SiteToolsPanel } from './screens/SiteToolsPanel';
 import { GlobalPreferencesPanel } from './screens/GlobalPreferencesPanel';
-import { siteInfoMoreMenuFilter } from './siteMenu';
 
 // Shape of a Local Tools-tab item, derived from the working contract
 // used by @getflywheel/local-addon-backups (Cloud Backups).
@@ -63,9 +62,4 @@ export function registerHooks(context: AddonRendererContext): void {
       },
     ];
   });
-
-  // Phase 9 — Per-site "More" menu items.
-  // Adds "Push to Cloudways", "Pull latest from Cloudways", "Open on
-  // Cloudways", or a "Link to Cloudways" fallback when unmapped.
-  hooks.addFilter('siteInfoMoreMenu', siteInfoMoreMenuFilter);
 }
