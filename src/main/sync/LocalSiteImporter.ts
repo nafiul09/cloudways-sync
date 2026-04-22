@@ -29,7 +29,7 @@ export class LocalSiteImporter implements SiteImporter {
   }
 
   async importPulledSite(input: LocalImportInput): Promise<LocalImportResult> {
-    const slug = toSiteSlug(input.siteName);
+    const slug = await uniqueSlug(toSiteSlug(input.siteName), this.sitesRoot);
     const sitePath = path.join(this.sitesRoot, slug);
     const siteDomain = `${slug}.local`;
     const sqlPath = input.importDatabase ? await ensureSqlDump(input.dbDumpPath) : undefined;
@@ -99,6 +99,23 @@ export function toSiteSlug(name: string): string {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
   return slug || 'cloudways-site';
+}
+
+/** If the target directory already exists (e.g. from a previous pull),
+ * append -2, -3, … until we find a free slot. */
+async function uniqueSlug(base: string, sitesRoot: string): Promise<string> {
+  let candidate = base;
+  let n = 1;
+  while (true) {
+    try {
+      await fs.promises.access(path.join(sitesRoot, candidate));
+      // exists — try next
+      n++;
+      candidate = `${base}-${n}`;
+    } catch {
+      return candidate;
+    }
+  }
 }
 
 function randomPassword(): string {

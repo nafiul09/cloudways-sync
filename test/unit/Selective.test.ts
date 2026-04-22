@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   shouldSkipStep,
+  shouldSkipPushStep,
   tarExcludePatternsForIncludes,
   tarExcludeFlags,
 } from '../../src/main/sync/Selective';
@@ -58,5 +59,21 @@ describe('Selective resolver', () => {
     const noContent = { ...ALL_ON, wpContent: false };
     expect(shouldSkipStep('download-content', noContent)).toBe(true);
     expect(shouldSkipStep('db-export', noContent)).toBe(false);
+  });
+
+  it('shouldSkipPushStep skips DB steps when database is off', () => {
+    const noDb = { ...ALL_ON, database: false };
+    expect(shouldSkipPushStep('local-export-db', noDb)).toBe(true);
+    expect(shouldSkipPushStep('upload-db', noDb)).toBe(true);
+    expect(shouldSkipPushStep('remote-db-import', noDb)).toBe(true);
+    expect(shouldSkipPushStep('search-replace', noDb)).toBe(true);
+    expect(shouldSkipPushStep('upload-content', noDb)).toBe(false);
+  });
+
+  it('shouldSkipPushStep skips content when wpContent is off', () => {
+    const noContent = { ...ALL_ON, wpContent: false };
+    expect(shouldSkipPushStep('upload-content', noContent)).toBe(true);
+    expect(shouldSkipPushStep('local-export-db', noContent)).toBe(false);
+    expect(shouldSkipPushStep('upload-db', noContent)).toBe(false);
   });
 });

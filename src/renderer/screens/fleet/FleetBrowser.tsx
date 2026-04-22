@@ -23,7 +23,9 @@ import type {
   AppSummary,
   JobProgressEvent,
   PullIncludes,
+  PushIncludes,
   ServerSummary,
+  UndoRecord,
 } from '../../../shared/ipcTypes';
 
 // Short human labels for the pull steps the orchestrator emits.
@@ -42,6 +44,20 @@ const PULL_STEP_LABELS: Record<string, string> = {
   'local-db': 'Importing DB into Local',
   'search-replace': 'Rewriting URLs',
   manifest: 'Writing manifest',
+};
+
+const PUSH_STEP_LABELS: Record<string, string> = {
+  validate: 'Validating',
+  'remote-backup': 'Backing up remote',
+  ssh: 'Connecting over SSH',
+  metadata: 'Reading remote metadata',
+  'local-export-db': 'Exporting local DB',
+  'upload-db': 'Uploading database',
+  'upload-content': 'Uploading wp-content',
+  'remote-db-import': 'Importing DB on server',
+  'search-replace': 'Rewriting URLs',
+  'cache-flush': 'Flushing caches',
+  cleanup: 'Cleaning up',
 };
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -388,26 +404,52 @@ function AppDetailView({
     muPlugins: true,
     languages: true,
   });
+  // Push state
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushResult, setPushResult] = useState<string | undefined>();
+  const [pushErr, setPushErr] = useState<string | undefined>();
+  const [pushStep, setPushStep] = useState<
+    { stepId: string; percent?: number; detail?: string } | undefined
+  >();
+  const [pushIncludes, setPushIncludes] = useState<PushIncludes>({
+    database: true,
+    wpContent: true,
+    uploads: true,
+    plugins: true,
+    themes: true,
+    muPlugins: true,
+    languages: true,
+  });
+  const [lastPushUndoId, setLastPushUndoId] = useState<string | undefined>();
+  const [undoBusy, setUndoBusy] = useState(false);
+  const [undoResult, setUndoResult] = useState<string | undefined>();
+  const [undoErr, setUndoErr] = useState<string | undefined>();
+  // Which sync direction is the panel for ('pull' | 'push')
+  const [syncMode, setSyncMode] = useState<'pull' | 'push'>('pull');
 
-  // Subscribe to JOB_PROGRESS so the button can surface which step is
-  // currently running instead of just "Pulling…" forever. The previous
-  // UI gave no visibility into where a pull was stuck.
+  // Subscribe to JOB_PROGRESS so buttons can surface which step is
+  // currently running. Handles both pull and push progress events.
   useEffect(() => {
     const unsubscribe = subscribeJobProgress((event: JobProgressEvent) => {
+      const percent =
+        typeof event.totalBytes === 'number' &&
+        event.totalBytes > 0 &&
+        typeof event.bytesTransferred === 'number'
+          ? Math.min(100, Math.round((event.bytesTransferred / event.totalBytes) * 100))
+          : undefined;
+      const stepInfo = { stepId: event.stepId, percent, detail: event.detail };
+
       if (event.status === 'running') {
-        const percent =
-          typeof event.totalBytes === 'number' &&
-          event.totalBytes > 0 &&
-          typeof event.bytesTransferred === 'number'
-            ? Math.min(100, Math.round((event.bytesTransferred / event.totalBytes) * 100))
-            : undefined;
-        setPullStep({ stepId: event.stepId, percent, detail: event.detail });
+        // Route to the correct state based on which job is busy
+        if (pushBusy) setPushStep(stepInfo);
+        else setPullStep(stepInfo);
       } else if (event.status === 'success' || event.status === 'failed') {
-        setPullStep(undefined);
+        if (pushBusy) setPushStep(undefined);
+        else setPullStep(undefined);
       }
     });
     return unsubscribe;
-  }, []);
+  }, [pushBusy]);
 
   useEffect(() => {
     let cancelled = false;
@@ -478,6 +520,70 @@ function AppDetailView({
       ? pullStep.detail
       : undefined;
 
+  const runPush = async () => {
+    setPushBusy(true);
+    setPushResult(undefined);
+    setPushErr(undefined);
+    setPushStep(undefined);
+    setLastPushUndoId(undefined);
+    try {
+      const plan = await ipcClient.planPush({
+        serverId: detail.serverId,
+        appId: detail.id,
+        localSiteId: '', // placeholder — we don't have a local site picker yet
+        localUrl: '', // filled by user or from mapping
+        webRootPath: '', // filled by user or from mapping
+        includes: pushIncludes,
+      });
+      const job = await ipcClient.runJob({ planId: plan.planId });
+      setPushResult('Push completed successfully.');
+      // Try to find the undo record for this push
+      try {
+        const undos = await ipcClient.listUndo();
+        const latest = undos.records.find(
+          (r) => r.appId === detail.id && !r.undoneAt,
+        );
+        if (latest) setLastPushUndoId(latest.id);
+      } catch {
+        /* non-fatal */
+      }
+    } catch (e) {
+      setPushErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPushBusy(false);
+      setPushStep(undefined);
+    }
+  };
+
+  const runUndo = async () => {
+    if (!lastPushUndoId) return;
+    setUndoBusy(true);
+    setUndoResult(undefined);
+    setUndoErr(undefined);
+    try {
+      await ipcClient.undoPush({ recordId: lastPushUndoId });
+      setUndoResult('Undo completed — remote site restored to pre-push state.');
+      setLastPushUndoId(undefined);
+    } catch (e) {
+      setUndoErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setUndoBusy(false);
+    }
+  };
+
+  const pushLabel = (() => {
+    if (!pushBusy) return 'Push to Cloudways';
+    if (!pushStep) return 'Pushing…';
+    const label = PUSH_STEP_LABELS[pushStep.stepId] ?? pushStep.stepId;
+    return pushStep.percent != null
+      ? `Pushing — ${label} (${pushStep.percent}%)`
+      : `Pushing — ${label}`;
+  })();
+  const pushSubLabel =
+    pushBusy && pushStep?.detail && (pushStep.stepId === 'upload-content' || pushStep.stepId === 'upload-db')
+      ? pushStep.detail
+      : undefined;
+
   return (
     <div>
       <div style={styles.detailHeading}>
@@ -492,18 +598,75 @@ function AppDetailView({
 
       {detail.isWordPress && (
         <>
-          <div style={styles.actionBar}>
-            <Button onClick={runPull} disabled={pullBusy}>
-              {pullLabel}
-            </Button>
-            {pullSubLabel && (
-              <div style={{ marginTop: 6, fontSize: 11, opacity: 0.65 }}>
-                {pullSubLabel}
-              </div>
-            )}
+          {/* Sync mode tabs */}
+          <div style={syncTabStyles.tabs}>
+            <button
+              type="button"
+              style={syncMode === 'pull' ? syncTabStyles.tabActive : syncTabStyles.tab}
+              onClick={() => setSyncMode('pull')}
+            >
+              Pull
+            </button>
+            <button
+              type="button"
+              style={syncMode === 'push' ? syncTabStyles.tabActive : syncTabStyles.tab}
+              onClick={() => setSyncMode('push')}
+            >
+              Push
+            </button>
           </div>
-          {!pullBusy && (
-            <SelectivePanel includes={includes} onChange={setIncludes} />
+
+          {syncMode === 'pull' && (
+            <>
+              <div style={styles.actionBar}>
+                <Button onClick={runPull} disabled={pullBusy || pushBusy}>
+                  {pullLabel}
+                </Button>
+                {pullSubLabel && (
+                  <div style={{ marginTop: 6, fontSize: 11, opacity: 0.65 }}>
+                    {pullSubLabel}
+                  </div>
+                )}
+              </div>
+              {!pullBusy && (
+                <SelectivePanel
+                  heading="Include in pull"
+                  includes={includes}
+                  onChange={setIncludes}
+                />
+              )}
+            </>
+          )}
+
+          {syncMode === 'push' && (
+            <>
+              <div style={styles.actionBar}>
+                <Button onClick={runPush} disabled={pushBusy || pullBusy}>
+                  {pushLabel}
+                </Button>
+                {lastPushUndoId && !pushBusy && (
+                  <Button
+                    onClick={runUndo}
+                    disabled={undoBusy}
+                    style={{ marginLeft: 8 }}
+                  >
+                    {undoBusy ? 'Restoring…' : 'Undo last push'}
+                  </Button>
+                )}
+                {pushSubLabel && (
+                  <div style={{ marginTop: 6, fontSize: 11, opacity: 0.65 }}>
+                    {pushSubLabel}
+                  </div>
+                )}
+              </div>
+              {!pushBusy && (
+                <SelectivePanel
+                  heading="Include in push"
+                  includes={pushIncludes}
+                  onChange={setPushIncludes}
+                />
+              )}
+            </>
           )}
         </>
       )}
@@ -515,6 +678,26 @@ function AppDetailView({
       {pullResult && (
         <div style={styles.banner}>
           <Banner variant="success">{pullResult}</Banner>
+        </div>
+      )}
+      {pushErr && (
+        <div style={styles.banner}>
+          <Banner variant="error">{pushErr}</Banner>
+        </div>
+      )}
+      {pushResult && (
+        <div style={styles.banner}>
+          <Banner variant="success">{pushResult}</Banner>
+        </div>
+      )}
+      {undoErr && (
+        <div style={styles.banner}>
+          <Banner variant="error">{undoErr}</Banner>
+        </div>
+      )}
+      {undoResult && (
+        <div style={styles.banner}>
+          <Banner variant="success">{undoResult}</Banner>
         </div>
       )}
 
@@ -657,6 +840,7 @@ function SmokeTestSection({
 // --- Selective pull panel ---
 
 type SelectivePanelProps = {
+  heading?: string;
   includes: PullIncludes;
   onChange: (next: PullIncludes) => void;
 };
@@ -669,7 +853,7 @@ const WP_CONTENT_OPTIONS: Array<{ key: keyof PullIncludes; label: string }> = [
   { key: 'languages', label: 'Languages' },
 ];
 
-function SelectivePanel({ includes, onChange }: SelectivePanelProps): React.ReactElement {
+function SelectivePanel({ heading = 'Include in sync', includes, onChange }: SelectivePanelProps): React.ReactElement {
   const toggle = (key: keyof PullIncludes) => {
     const next = { ...includes, [key]: !includes[key] };
     // If all wp-content sub-options are off, turn off wpContent too.
@@ -691,7 +875,7 @@ function SelectivePanel({ includes, onChange }: SelectivePanelProps): React.Reac
 
   return (
     <div style={selectiveStyles.panel}>
-      <Text style={selectiveStyles.heading}>Include in pull</Text>
+      <Text style={selectiveStyles.heading}>{heading}</Text>
       <div style={selectiveStyles.grid}>
         <label style={selectiveStyles.item}>
           <Checkbox
@@ -840,6 +1024,37 @@ function CopyButton({ value }: { value: string }): React.ReactElement {
     </button>
   );
 }
+
+// --- Sync mode tabs ---
+
+const syncTabStyles: Record<string, React.CSSProperties> = {
+  tabs: {
+    display: 'flex',
+    gap: 0,
+    marginBottom: 12,
+    borderBottom: '1px solid rgba(255,255,255,0.1)',
+  },
+  tab: {
+    padding: '8px 16px',
+    background: 'transparent',
+    border: 'none',
+    borderBottom: '2px solid transparent',
+    color: 'rgba(255,255,255,0.5)',
+    cursor: 'pointer',
+    fontSize: 13,
+    fontWeight: 500,
+  },
+  tabActive: {
+    padding: '8px 16px',
+    background: 'transparent',
+    border: 'none',
+    borderBottom: '2px solid #51bb7b',
+    color: '#fff',
+    cursor: 'pointer',
+    fontSize: 13,
+    fontWeight: 600,
+  },
+};
 
 // --- Styles ---
 

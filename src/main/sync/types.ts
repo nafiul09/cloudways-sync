@@ -1,4 +1,4 @@
-import type { PullIncludes, SyncStep } from '../../shared/ipcTypes';
+import type { PullIncludes, PushIncludes, SyncStep } from '../../shared/ipcTypes';
 
 export type PullPlan = {
   id: string;
@@ -8,6 +8,20 @@ export type PullPlan = {
   includes: PullIncludes;
   steps: SyncStep[];
   createdAt: string;
+};
+
+export type PushPlan = {
+  id: string;
+  serverId: number;
+  appId: number;
+  localSiteId: string;
+  localUrl: string;
+  webRootPath: string;
+  includes: PushIncludes;
+  steps: SyncStep[];
+  createdAt: string;
+  /** For Mode B: label for the new Cloudways app. Present when appId was originally 0. */
+  newAppLabel?: string;
 };
 
 export type PullMetadata = {

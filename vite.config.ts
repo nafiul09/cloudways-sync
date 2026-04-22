@@ -47,5 +47,10 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     include: ['test/**/*.{test,spec}.{ts,tsx}', 'src/**/*.{test,spec}.{ts,tsx}'],
+    alias: {
+      // @getflywheel/local packages are declaration-only (no JS).
+      // Point to a test stub so vitest can resolve the import.
+      '@getflywheel/local/renderer': path.resolve(__dirname, 'test/fixtures/localRendererMock.ts'),
+    },
   },
 });

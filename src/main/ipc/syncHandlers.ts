@@ -6,18 +6,31 @@ import type { ConnectionService } from '../connection/service';
 import { JobStore } from '../sync/JobStore';
 import { LocalSiteImporter } from '../sync/LocalSiteImporter';
 import { PullOrchestrator } from '../sync/PullOrchestrator';
+import { PushOrchestrator } from '../sync/PushOrchestrator';
+import { SiteMapper } from '../sync/SiteMapper';
+import { UndoLedger } from '../sync/UndoLedger';
 import {
   CHANNELS,
   type CancelJobRequest,
   type CancelJobResponse,
+  type GetMappingRequest,
+  type GetMappingResponse,
   type IpcResult,
   type JobDoneEvent,
   type JobProgressEvent,
+  type ListUndoResponse,
+  type MapSiteRequest,
+  type MapSiteResponse,
   type PlanPullRequest,
   type PlanPullResponse,
+  type PlanPushRequest,
+  type PlanPushResponse,
   type RunJobRequest,
   type RunJobResponse,
   type SerializedError,
+  type SiteMapping,
+  type UndoPushRequest,
+  type UndoPushResponse,
 } from '../../shared/ipcTypes';
 import type { AddIpcAsyncListener } from './handlers';
 
@@ -65,6 +78,9 @@ export function registerSyncHandlers({
   sendIPCEvent,
   jobs = new JobStore(),
 }: RegisterSyncOptions): void {
+  const undoLedger = new UndoLedger(userDataDir);
+  const siteMapper = new SiteMapper(userDataDir);
+
   addIpcAsyncListener(CHANNELS.PLAN_PULL, (...args: unknown[]) => {
     const payload = args[0] as PlanPullRequest | undefined;
     return runHandler<PlanPullResponse>(async () => {
@@ -79,28 +95,141 @@ export function registerSyncHandlers({
     });
   });
 
+  addIpcAsyncListener(CHANNELS.PLAN_PUSH, (...args: unknown[]) => {
+    const payload = args[0] as PlanPushRequest | undefined;
+    return runHandler<PlanPushResponse>(async () => {
+      if (!payload || typeof payload.serverId !== 'number' || typeof payload.appId !== 'number') {
+        throw new CloudwaysError('AUTH_INVALID', 'serverId and appId are required.', { retriable: false });
+      }
+      if (!payload.localSiteId?.trim()) {
+        throw new CloudwaysError('AUTH_INVALID', 'localSiteId is required.', { retriable: false });
+      }
+      if (!payload.localUrl?.trim()) {
+        throw new CloudwaysError('AUTH_INVALID', 'localUrl is required.', { retriable: false });
+      }
+      if (!payload.webRootPath?.trim()) {
+        throw new CloudwaysError('AUTH_INVALID', 'webRootPath is required.', { retriable: false });
+      }
+      // Mode B: appId === 0 requires a newAppLabel
+      if (payload.appId === 0 && !payload.newAppLabel?.trim()) {
+        throw new CloudwaysError('AUTH_INVALID', 'newAppLabel is required when appId is 0 (Mode B).', {
+          retriable: false,
+        });
+      }
+      const plan = jobs.createPushPlan(payload);
+      return { planId: plan.id, steps: plan.steps };
+    });
+  });
+
   addIpcAsyncListener(CHANNELS.RUN_JOB, (...args: unknown[]) => {
     const payload = args[0] as RunJobRequest | undefined;
     return runHandler<RunJobResponse>(async () => {
       if (!payload?.planId) {
         throw new CloudwaysError('AUTH_INVALID', 'planId is required.', { retriable: false });
       }
-      const plan = jobs.getPullPlan(payload.planId);
-      if (!plan) {
-        throw new CloudwaysError('OPERATION_FAILED', `Plan ${payload.planId} was not found.`, {
-          retriable: false,
+
+      // Try pull plan first, then push plan
+      const pullPlan = jobs.getPullPlan(payload.planId);
+      if (pullPlan) {
+        const orchestrator = new PullOrchestrator({
+          client: connection.requireClient(),
+          importer: new LocalSiteImporter({ services }),
+          userDataDir,
+          isCancelled: (jobId) => jobs.isCancelled(jobId),
+          emitProgress: (event: JobProgressEvent) => sendIPCEvent(CHANNELS.JOB_PROGRESS, event),
         });
+        const result = await orchestrator.run(pullPlan);
+        sendIPCEvent(CHANNELS.JOB_DONE, result satisfies JobDoneEvent);
+        return result;
       }
-      const orchestrator = new PullOrchestrator({
-        client: connection.requireClient(),
-        importer: new LocalSiteImporter({ services }),
-        userDataDir,
-        isCancelled: (jobId) => jobs.isCancelled(jobId),
-        emitProgress: (event: JobProgressEvent) => sendIPCEvent(CHANNELS.JOB_PROGRESS, event),
+
+      const pushPlan = jobs.getPushPlan(payload.planId);
+      if (pushPlan) {
+        const client = connection.requireClient();
+
+        // Mode B: provision a new app before running the push
+        let newlyCreatedAppId: number | undefined;
+        if (pushPlan.appId === 0) {
+          const appLabel = pushPlan.newAppLabel;
+          if (!appLabel) {
+            throw new CloudwaysError('AUTH_INVALID', 'newAppLabel is required for Mode B push.', {
+              retriable: false,
+            });
+          }
+
+          // Create the app
+          const createOpId = await client.createApp(pushPlan.serverId, appLabel);
+          await client.waitForOperation(createOpId);
+
+          // Re-fetch servers to find the newly-created app
+          const servers = await client.listServers();
+          const server = servers.find((s) => s.id === pushPlan.serverId);
+          if (!server) {
+            throw new CloudwaysError('OPERATION_FAILED', `Server ${pushPlan.serverId} not found after app creation.`, {
+              retriable: false,
+            });
+          }
+          // The new app is the one whose label matches and wasn't in the plan
+          const newApp = server.apps.find((a) => a.label === appLabel);
+          if (!newApp) {
+            throw new CloudwaysError('OPERATION_FAILED', `Newly created app "${appLabel}" not found on server.`, {
+              retriable: false,
+            });
+          }
+
+          // Update the plan's appId with the real value
+          pushPlan.appId = newApp.id;
+          newlyCreatedAppId = newApp.id;
+        }
+
+        const orchestrator = new PushOrchestrator({
+          client,
+          undoLedger,
+          userDataDir,
+          isCancelled: (jobId) => jobs.isCancelled(jobId),
+          emitProgress: (event: JobProgressEvent) => sendIPCEvent(CHANNELS.JOB_PROGRESS, event),
+        });
+
+        let result: RunJobResponse;
+        try {
+          result = await orchestrator.run(pushPlan);
+        } catch (err) {
+          // On failure after app creation, expose the new app ID so the
+          // caller can offer to delete it. We never auto-delete.
+          if (newlyCreatedAppId !== undefined) {
+            const detail =
+              err instanceof Error
+                ? { message: err.message, newlyCreatedAppId, serverId: pushPlan.serverId }
+                : { message: String(err), newlyCreatedAppId, serverId: pushPlan.serverId };
+            throw new CloudwaysError(
+              'OPERATION_FAILED',
+              `Push failed after app creation. The new app (id=${newlyCreatedAppId}) was NOT auto-deleted.`,
+              { retriable: false, detail },
+            );
+          }
+          throw err;
+        }
+
+        // On success for Mode B, save a site mapping
+        if (newlyCreatedAppId !== undefined) {
+          const mapping: SiteMapping = {
+            localSiteId: pushPlan.localSiteId,
+            serverId: pushPlan.serverId,
+            appId: newlyCreatedAppId,
+            appLabel: pushPlan.newAppLabel as string,
+            remoteUrl: result.localUrl ?? '',
+            createdAt: new Date().toISOString(),
+          };
+          await siteMapper.set(mapping);
+        }
+
+        sendIPCEvent(CHANNELS.JOB_DONE, result satisfies JobDoneEvent);
+        return result;
+      }
+
+      throw new CloudwaysError('OPERATION_FAILED', `Plan ${payload.planId} was not found.`, {
+        retriable: false,
       });
-      const result = await orchestrator.run(plan);
-      sendIPCEvent(CHANNELS.JOB_DONE, result satisfies JobDoneEvent);
-      return result;
     });
   });
 
@@ -111,6 +240,76 @@ export function registerSyncHandlers({
         throw new CloudwaysError('AUTH_INVALID', 'jobId is required.', { retriable: false });
       }
       return { cancelled: jobs.cancel(payload.jobId) };
+    });
+  });
+
+  addIpcAsyncListener(CHANNELS.LIST_UNDO, () => {
+    return runHandler<ListUndoResponse>(async () => {
+      const records = await undoLedger.list();
+      return { records };
+    });
+  });
+
+  addIpcAsyncListener(CHANNELS.UNDO_PUSH, (...args: unknown[]) => {
+    const payload = args[0] as UndoPushRequest | undefined;
+    return runHandler<UndoPushResponse>(async () => {
+      if (!payload?.recordId) {
+        throw new CloudwaysError('AUTH_INVALID', 'recordId is required.', { retriable: false });
+      }
+      const record = await undoLedger.get(payload.recordId);
+      if (!record) {
+        throw new CloudwaysError('OPERATION_FAILED', `Undo record ${payload.recordId} not found.`, {
+          retriable: false,
+        });
+      }
+      if (record.undoneAt) {
+        throw new CloudwaysError('OPERATION_FAILED', 'This push has already been undone.', {
+          retriable: false,
+        });
+      }
+      const client = connection.requireClient();
+      const operationId = await client.restoreApp(record.serverId, record.appId);
+      await client.waitForOperation(operationId);
+      await undoLedger.markUndone(record.id);
+      return { restored: true };
+    });
+  });
+
+  // --- Phase 8: Site mapping handlers ---
+
+  addIpcAsyncListener(CHANNELS.MAP_SITE, (...args: unknown[]) => {
+    const payload = args[0] as MapSiteRequest | undefined;
+    return runHandler<MapSiteResponse>(async () => {
+      if (!payload?.localSiteId?.trim()) {
+        throw new CloudwaysError('AUTH_INVALID', 'localSiteId is required.', { retriable: false });
+      }
+      if (typeof payload.serverId !== 'number' || typeof payload.appId !== 'number') {
+        throw new CloudwaysError('AUTH_INVALID', 'serverId and appId are required.', { retriable: false });
+      }
+      if (!payload.appLabel?.trim()) {
+        throw new CloudwaysError('AUTH_INVALID', 'appLabel is required.', { retriable: false });
+      }
+      const mapping: SiteMapping = {
+        localSiteId: payload.localSiteId,
+        serverId: payload.serverId,
+        appId: payload.appId,
+        appLabel: payload.appLabel,
+        remoteUrl: payload.remoteUrl ?? '',
+        createdAt: new Date().toISOString(),
+      };
+      await siteMapper.set(mapping);
+      return { mapping };
+    });
+  });
+
+  addIpcAsyncListener(CHANNELS.GET_MAPPING, (...args: unknown[]) => {
+    const payload = args[0] as GetMappingRequest | undefined;
+    return runHandler<GetMappingResponse>(async () => {
+      if (!payload?.localSiteId?.trim()) {
+        throw new CloudwaysError('AUTH_INVALID', 'localSiteId is required.', { retriable: false });
+      }
+      const mapping = await siteMapper.get(payload.localSiteId);
+      return { mapping };
     });
   });
 }

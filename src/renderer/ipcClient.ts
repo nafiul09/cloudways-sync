@@ -12,19 +12,28 @@ import {
   type GetAppRequest,
   type GetAppResponse,
   type GetConnectionResponse,
+  type GetMappingRequest,
+  type GetMappingResponse,
   type IpcResult,
   type JobDoneEvent,
   type JobProgressEvent,
   type ListAppsRequest,
   type ListAppsResponse,
   type ListServersResponse,
+  type ListUndoResponse,
+  type MapSiteRequest,
+  type MapSiteResponse,
   type PlanPullRequest,
   type PlanPullResponse,
+  type PlanPushRequest,
+  type PlanPushResponse,
   type RunJobRequest,
   type RunJobResponse,
   type SerializedError,
   type SmokeAppRequest,
   type SmokeAppResponse,
+  type UndoPushRequest,
+  type UndoPushResponse,
 } from '../shared/ipcTypes';
 
 export class IpcCallError extends Error {
@@ -56,7 +65,12 @@ export const ipcClient = {
   getApp: (req: GetAppRequest) => invoke<GetAppResponse>(CHANNELS.GET_APP, req),
   smokeApp: (req: SmokeAppRequest) => invoke<SmokeAppResponse>(CHANNELS.SMOKE_APP, req),
   planPull: (req: PlanPullRequest) => invoke<PlanPullResponse>(CHANNELS.PLAN_PULL, req),
+  planPush: (req: PlanPushRequest) => invoke<PlanPushResponse>(CHANNELS.PLAN_PUSH, req),
   runJob: (req: RunJobRequest) => invoke<RunJobResponse>(CHANNELS.RUN_JOB, req),
+  listUndo: () => invoke<ListUndoResponse>(CHANNELS.LIST_UNDO, {}),
+  undoPush: (req: UndoPushRequest) => invoke<UndoPushResponse>(CHANNELS.UNDO_PUSH, req),
+  mapSite: (req: MapSiteRequest) => invoke<MapSiteResponse>(CHANNELS.MAP_SITE, req),
+  getMapping: (req: GetMappingRequest) => invoke<GetMappingResponse>(CHANNELS.GET_MAPPING, req),
 };
 
 // --- Streaming job events ----------------------------------------------
