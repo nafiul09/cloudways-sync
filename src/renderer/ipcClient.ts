@@ -13,6 +13,8 @@ import {
   type GetAppResponse,
   type GetConnectionResponse,
   type IpcResult,
+  type JobDoneEvent,
+  type JobProgressEvent,
   type ListAppsRequest,
   type ListAppsResponse,
   type ListServersResponse,
@@ -56,3 +58,52 @@ export const ipcClient = {
   planPull: (req: PlanPullRequest) => invoke<PlanPullResponse>(CHANNELS.PLAN_PULL, req),
   runJob: (req: RunJobRequest) => invoke<RunJobResponse>(CHANNELS.RUN_JOB, req),
 };
+
+// --- Streaming job events ----------------------------------------------
+// The main process broadcasts CHANNELS.JOB_PROGRESS / CHANNELS.JOB_DONE
+// via `sendIPCEvent`, which under the hood is `webContents.send(...)`.
+// The renderer side reads these via Electron's ipcRenderer. Vite
+// externalizes `electron`, so this require resolves to the runtime
+// Electron module supplied by Local's renderer process.
+
+type IpcRendererLike = {
+  on: (channel: string, listener: (event: unknown, ...args: unknown[]) => void) => unknown;
+  off?: (channel: string, listener: (event: unknown, ...args: unknown[]) => void) => unknown;
+  removeListener?: (
+    channel: string,
+    listener: (event: unknown, ...args: unknown[]) => void,
+  ) => unknown;
+};
+
+function getIpcRenderer(): IpcRendererLike | undefined {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires, global-require
+    const mod = require('electron') as { ipcRenderer?: IpcRendererLike };
+    return mod.ipcRenderer;
+  } catch {
+    return undefined;
+  }
+}
+
+function subscribe<T>(channel: string, handler: (payload: T) => void): () => void {
+  const ipc = getIpcRenderer();
+  if (!ipc) return () => undefined;
+  const wrapped = (_event: unknown, ...args: unknown[]) => {
+    handler(args[0] as T);
+  };
+  ipc.on(channel, wrapped);
+  return () => {
+    const remove = ipc.off ?? ipc.removeListener;
+    remove?.call(ipc, channel, wrapped);
+  };
+}
+
+/** Subscribe to per-step pull/push progress. Returns an unsubscribe fn. */
+export function subscribeJobProgress(handler: (event: JobProgressEvent) => void): () => void {
+  return subscribe<JobProgressEvent>(CHANNELS.JOB_PROGRESS, handler);
+}
+
+/** Subscribe to the terminal job-done event. Returns an unsubscribe fn. */
+export function subscribeJobDone(handler: (event: JobDoneEvent) => void): () => void {
+  return subscribe<JobDoneEvent>(CHANNELS.JOB_DONE, handler);
+}

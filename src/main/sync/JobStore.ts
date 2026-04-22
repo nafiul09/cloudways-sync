@@ -5,6 +5,11 @@ import type { PullPlan } from './types';
 const DEFAULT_INCLUDES: PullIncludes = {
   database: true,
   wpContent: true,
+  uploads: true,
+  plugins: true,
+  themes: true,
+  muPlugins: true,
+  languages: true,
 };
 
 export const PULL_STEPS: Array<Omit<SyncStep, 'status'>> = [

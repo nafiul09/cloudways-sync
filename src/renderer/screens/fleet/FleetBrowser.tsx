@@ -10,14 +10,39 @@
 import React, { useEffect, useState } from 'react';
 import {
   Banner,
+  Checkbox,
   Spinner,
   TextButton,
   Title,
   Text,
   Button,
 } from '@getflywheel/local-components';
-import { ipcClient, IpcCallError } from '../../ipcClient';
-import type { AppDetail as AppDetailPayload, AppSummary, ServerSummary } from '../../../shared/ipcTypes';
+import { ipcClient, IpcCallError, subscribeJobProgress } from '../../ipcClient';
+import type {
+  AppDetail as AppDetailPayload,
+  AppSummary,
+  JobProgressEvent,
+  PullIncludes,
+  ServerSummary,
+} from '../../../shared/ipcTypes';
+
+// Short human labels for the pull steps the orchestrator emits.
+// Kept here (not imported from JobStore) because JobStore lives in
+// main/ and must not be pulled into the renderer bundle.
+const PULL_STEP_LABELS: Record<string, string> = {
+  validate: 'Validating',
+  backup: 'Taking Cloudways backup',
+  ssh: 'Connecting over SSH',
+  metadata: 'Reading WordPress metadata',
+  'db-export': 'Exporting remote DB',
+  'download-db': 'Downloading DB dump',
+  'download-content': 'Downloading wp-content',
+  'local-site': 'Importing into Local',
+  'local-content': 'Installing wp-content',
+  'local-db': 'Importing DB into Local',
+  'search-replace': 'Rewriting URLs',
+  manifest: 'Writing manifest',
+};
 
 const PROVIDER_LABELS: Record<string, string> = {
   do: 'DigitalOcean',
@@ -351,6 +376,38 @@ function AppDetailView({
   const [pullBusy, setPullBusy] = useState(false);
   const [pullResult, setPullResult] = useState<string | undefined>();
   const [pullErr, setPullErr] = useState<string | undefined>();
+  const [pullStep, setPullStep] = useState<
+    { stepId: string; percent?: number; detail?: string } | undefined
+  >();
+  const [includes, setIncludes] = useState<PullIncludes>({
+    database: true,
+    wpContent: true,
+    uploads: true,
+    plugins: true,
+    themes: true,
+    muPlugins: true,
+    languages: true,
+  });
+
+  // Subscribe to JOB_PROGRESS so the button can surface which step is
+  // currently running instead of just "Pulling…" forever. The previous
+  // UI gave no visibility into where a pull was stuck.
+  useEffect(() => {
+    const unsubscribe = subscribeJobProgress((event: JobProgressEvent) => {
+      if (event.status === 'running') {
+        const percent =
+          typeof event.totalBytes === 'number' &&
+          event.totalBytes > 0 &&
+          typeof event.bytesTransferred === 'number'
+            ? Math.min(100, Math.round((event.bytesTransferred / event.totalBytes) * 100))
+            : undefined;
+        setPullStep({ stepId: event.stepId, percent, detail: event.detail });
+      } else if (event.status === 'success' || event.status === 'failed') {
+        setPullStep(undefined);
+      }
+    });
+    return unsubscribe;
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -386,11 +443,13 @@ function AppDetailView({
     setPullBusy(true);
     setPullResult(undefined);
     setPullErr(undefined);
+    setPullStep(undefined);
     try {
       const plan = await ipcClient.planPull({
         serverId: detail.serverId,
         appId: detail.id,
         destinationName: detail.label,
+        includes,
       });
       const job = await ipcClient.runJob({ planId: plan.planId });
       setPullResult(job.localUrl ? `Pulled into Local: ${job.localUrl}` : 'Pull completed.');
@@ -398,8 +457,26 @@ function AppDetailView({
       setPullErr(e instanceof Error ? e.message : String(e));
     } finally {
       setPullBusy(false);
+      setPullStep(undefined);
     }
   };
+
+  const pullLabel = (() => {
+    if (!pullBusy) return 'Pull to Local';
+    if (!pullStep) return 'Pulling…';
+    const label = PULL_STEP_LABELS[pullStep.stepId] ?? pullStep.stepId;
+    return pullStep.percent != null
+      ? `Pulling — ${label} (${pullStep.percent}%)`
+      : `Pulling — ${label}`;
+  })();
+  // The orchestrator sends the current file path in `detail` during
+  // wp-content mirroring. Surfacing it as a secondary line makes
+  // stalls on individual files obvious, even when the per-file
+  // percent jumps straight to 100%.
+  const pullSubLabel =
+    pullBusy && pullStep?.detail && (pullStep.stepId === 'download-content' || pullStep.stepId === 'download-db')
+      ? pullStep.detail
+      : undefined;
 
   return (
     <div>
@@ -414,11 +491,21 @@ function AppDetailView({
       </div>
 
       {detail.isWordPress && (
-        <div style={styles.actionBar}>
-          <Button onClick={runPull} disabled={pullBusy}>
-            {pullBusy ? 'Pulling…' : 'Pull to Local'}
-          </Button>
-        </div>
+        <>
+          <div style={styles.actionBar}>
+            <Button onClick={runPull} disabled={pullBusy}>
+              {pullLabel}
+            </Button>
+            {pullSubLabel && (
+              <div style={{ marginTop: 6, fontSize: 11, opacity: 0.65 }}>
+                {pullSubLabel}
+              </div>
+            )}
+          </div>
+          {!pullBusy && (
+            <SelectivePanel includes={includes} onChange={setIncludes} />
+          )}
+        </>
       )}
       {pullErr && (
         <div style={styles.banner}>
@@ -566,6 +653,115 @@ function SmokeTestSection({
     </>
   );
 }
+
+// --- Selective pull panel ---
+
+type SelectivePanelProps = {
+  includes: PullIncludes;
+  onChange: (next: PullIncludes) => void;
+};
+
+const WP_CONTENT_OPTIONS: Array<{ key: keyof PullIncludes; label: string }> = [
+  { key: 'uploads', label: 'Uploads (media)' },
+  { key: 'plugins', label: 'Plugins' },
+  { key: 'themes', label: 'Themes' },
+  { key: 'muPlugins', label: 'MU-Plugins' },
+  { key: 'languages', label: 'Languages' },
+];
+
+function SelectivePanel({ includes, onChange }: SelectivePanelProps): React.ReactElement {
+  const toggle = (key: keyof PullIncludes) => {
+    const next = { ...includes, [key]: !includes[key] };
+    // If all wp-content sub-options are off, turn off wpContent too.
+    // If any sub-option is on, ensure wpContent is on.
+    const anySubOn = WP_CONTENT_OPTIONS.some((o) => next[o.key]);
+    next.wpContent = anySubOn;
+    onChange(next);
+  };
+
+  const toggleWpContent = () => {
+    const next = { ...includes };
+    const newVal = !includes.wpContent;
+    next.wpContent = newVal;
+    for (const o of WP_CONTENT_OPTIONS) {
+      next[o.key] = newVal;
+    }
+    onChange(next);
+  };
+
+  return (
+    <div style={selectiveStyles.panel}>
+      <Text style={selectiveStyles.heading}>Include in pull</Text>
+      <div style={selectiveStyles.grid}>
+        <label style={selectiveStyles.item}>
+          <Checkbox
+            checked={includes.database}
+            onChange={() => toggle('database')}
+          />
+          <span style={selectiveStyles.label}>Database</span>
+        </label>
+        <label style={selectiveStyles.item}>
+          <Checkbox
+            checked={includes.wpContent}
+            onChange={toggleWpContent}
+          />
+          <span style={selectiveStyles.label}>wp-content (all)</span>
+        </label>
+        {includes.wpContent && (
+          <div style={selectiveStyles.subGroup}>
+            {WP_CONTENT_OPTIONS.map((opt) => (
+              <label key={opt.key} style={selectiveStyles.item}>
+                <Checkbox
+                  checked={includes[opt.key] as boolean}
+                  onChange={() => toggle(opt.key)}
+                />
+                <span style={selectiveStyles.label}>{opt.label}</span>
+              </label>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const selectiveStyles: Record<string, React.CSSProperties> = {
+  panel: {
+    marginBottom: 16,
+    padding: '12px 16px',
+    background: 'rgba(255,255,255,0.04)',
+    borderRadius: 6,
+  },
+  heading: {
+    fontSize: 12,
+    fontWeight: 600,
+    textTransform: 'uppercase' as const,
+    letterSpacing: 0.5,
+    opacity: 0.6,
+    marginBottom: 8,
+  },
+  grid: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 6,
+  },
+  subGroup: {
+    paddingLeft: 24,
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 6,
+  },
+  item: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    cursor: 'pointer',
+    fontSize: 13,
+  },
+  label: {
+    userSelect: 'none' as const,
+  },
+};
 
 // --- Small building blocks ---
 

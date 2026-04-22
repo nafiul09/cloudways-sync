@@ -31,6 +31,14 @@ export type SftpConnectConfig = {
   privateKey?: Buffer | string;
   passphrase?: string;
   readyTimeoutMs?: number;
+  /** Abort a transfer if no bytes are received for this long.
+   * Set to 0 to disable. Default: 120_000 (2 min). */
+  stallTimeoutMs?: number;
+  /** Max wall-clock time for a single metadata RPC (list/stat/mkdir/
+   * exists/end). If the server stops responding between files the
+   * whole mirror would otherwise hang forever. Set to 0 to disable.
+   * Default: 60_000 (60 s). */
+  rpcTimeoutMs?: number;
 };
 
 export type ProgressEvent = {
@@ -83,18 +91,48 @@ export type SftpClientOptions = {
 };
 
 const DEFAULT_READY_TIMEOUT = 20_000;
+const DEFAULT_STALL_TIMEOUT = 120_000;
+const DEFAULT_RPC_TIMEOUT = 60_000;
 
 export class SftpClient {
   private readonly config: SftpConnectConfig;
   private readonly makeClient: () => Ssh2SftpClientLike;
+  private readonly stallTimeoutMs: number;
+  private readonly rpcTimeoutMs: number;
   private client: Ssh2SftpClientLike | undefined;
   private ready = false;
 
   constructor(config: SftpConnectConfig, opts: SftpClientOptions = {}) {
     this.config = config;
+    this.stallTimeoutMs = config.stallTimeoutMs ?? DEFAULT_STALL_TIMEOUT;
+    this.rpcTimeoutMs = config.rpcTimeoutMs ?? DEFAULT_RPC_TIMEOUT;
     this.makeClient =
       opts.clientFactory ??
       (() => new Ssh2SftpClient() as unknown as Ssh2SftpClientLike);
+  }
+
+  /** Race a pending ssh2-sftp-client RPC against a timeout. When the
+   * remote end stops answering between files (common against rate-
+   * limited shared hosts), the underlying library will wait forever;
+   * this guard makes the call fail fast so the whole job doesn't hang
+   * at an arbitrary file boundary. */
+  private withRpcTimeout<T>(op: string, p: Promise<T>): Promise<T> {
+    const ms = this.rpcTimeoutMs;
+    if (ms <= 0) return p;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<T>((_, reject) => {
+      timer = setTimeout(() => {
+        reject(
+          new RemoteError('SFTP_FAILED', `SFTP ${op} timed out after ${Math.round(ms / 1000)}s`, {
+            retriable: true,
+            detail: { op, timeoutMs: ms },
+          }),
+        );
+      }, ms);
+    });
+    return Promise.race([p, timeout]).finally(() => {
+      if (timer) clearTimeout(timer);
+    }) as Promise<T>;
   }
 
   get connected(): boolean {
@@ -125,9 +163,9 @@ export class SftpClient {
   async end(): Promise<void> {
     if (!this.client) return;
     try {
-      await this.client.end();
+      await this.withRpcTimeout('end', this.client.end());
     } catch {
-      /* best-effort */
+      /* best-effort — we still drop our handle below */
     }
     this.client = undefined;
     this.ready = false;
@@ -142,7 +180,7 @@ export class SftpClient {
 
   async exists(remotePath: string): Promise<false | 'd' | '-' | 'l'> {
     try {
-      return await this.require().exists(remotePath);
+      return await this.withRpcTimeout('exists', this.require().exists(remotePath));
     } catch (err) {
       throw classifySftpError('exists', err);
     }
@@ -150,7 +188,7 @@ export class SftpClient {
 
   async list(remotePath: string): Promise<RemoteEntry[]> {
     try {
-      const raw = await this.require().list(remotePath);
+      const raw = await this.withRpcTimeout('list', this.require().list(remotePath));
       return raw.map((e) => ({
         name: e.name,
         type: mapType(e.type),
@@ -164,7 +202,7 @@ export class SftpClient {
 
   async mkdirp(remotePath: string): Promise<void> {
     try {
-      await this.require().mkdir(remotePath, true);
+      await this.withRpcTimeout('mkdir', this.require().mkdir(remotePath, true));
     } catch (err) {
       throw classifySftpError('mkdir', err);
     }
@@ -172,7 +210,7 @@ export class SftpClient {
 
   async stat(remotePath: string): Promise<{ size: number; modifyTime: number; isDirectory: boolean; isFile: boolean }> {
     try {
-      return await this.require().stat(remotePath);
+      return await this.withRpcTimeout('stat', this.require().stat(remotePath));
     } catch (err) {
       throw classifySftpError('stat', err);
     }
@@ -189,47 +227,72 @@ export class SftpClient {
 
     let total: number | undefined;
     try {
-      const st = await client.stat(remotePath);
+      const st = await this.withRpcTimeout('stat', client.stat(remotePath));
       total = st.size;
     } catch (err) {
       throw classifySftpError('download', err);
     }
 
     const writeStream = fs.createWriteStream(localPath);
-    let bytes = 0;
-    if (opts.onProgress) {
-      writeStream.on('data', (chunk: Buffer | string) => {
-        bytes += typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.length;
-      });
-    }
-    // ssh2-sftp-client emits a "download" event per chunk (see docs).
-    // We listen on the client for coarse-grained progress.
-    const onData = (info: unknown) => {
-      if (!opts.onProgress) return;
-      const chunk = info as { source?: string; destination?: string; bytesRead?: number };
-      if (!chunk || chunk.source !== remotePath) return;
-      if (typeof chunk.bytesRead === 'number') bytes = chunk.bytesRead;
-      opts.onProgress({
-        remotePath,
-        localPath,
-        bytesTransferred: bytes,
-        totalBytes: total,
-      });
-    };
-    client.on('download', onData);
+
+    // Progress + stall detection via writeStream.bytesWritten polling.
+    // This is far more reliable than ssh2-sftp-client's 'download'
+    // event which silently fails to fire on many server/version combos
+    // (path resolution mismatches, event not wired, etc.).
+    let lastBytesWritten = 0;
+    let lastProgressAt = Date.now();
+    let stallReason: string | undefined;
+    const stallMs = this.stallTimeoutMs;
+    const POLL_MS = 3_000;
+
+    opts.onProgress?.({ remotePath, localPath, bytesTransferred: 0, totalBytes: total });
+
+    const pollTimer =
+      stallMs > 0
+        ? setInterval(() => {
+            const current = writeStream.bytesWritten;
+            if (current > lastBytesWritten) {
+              lastBytesWritten = current;
+              lastProgressAt = Date.now();
+              opts.onProgress?.({
+                remotePath,
+                localPath,
+                bytesTransferred: current,
+                totalBytes: total,
+              });
+            } else if (Date.now() - lastProgressAt >= stallMs) {
+              stallReason = `SFTP transfer stalled (no bytes for ${Math.round(stallMs / 1000)}s): ${remotePath}`;
+              clearInterval(pollTimer as NodeJS.Timeout);
+              writeStream.destroy(new Error(stallReason));
+              setTimeout(() => {
+                if (this.client) {
+                  this.ready = false;
+                  this.client.end().catch(() => undefined);
+                }
+              }, 10_000).unref?.();
+            }
+          }, POLL_MS)
+        : undefined;
 
     try {
       await client.get(remotePath, writeStream);
+      const finalBytes = writeStream.bytesWritten;
       opts.onProgress?.({
         remotePath,
         localPath,
-        bytesTransferred: total ?? bytes,
+        bytesTransferred: total ?? finalBytes,
         totalBytes: total,
       });
     } catch (err) {
+      if (stallReason) {
+        throw new RemoteError('SFTP_FAILED', stallReason, {
+          retriable: true,
+          detail: { remotePath, bytesTransferred: writeStream.bytesWritten, totalBytes: total },
+        });
+      }
       throw classifySftpError('download', err);
     } finally {
-      client.off?.('download', onData);
+      if (pollTimer) clearInterval(pollTimer);
     }
   }
 
