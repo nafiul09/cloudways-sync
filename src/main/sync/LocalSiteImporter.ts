@@ -80,6 +80,7 @@ export class LocalSiteImporter implements SiteImporter {
     return {
       localSiteId: site.id,
       localUrl,
+      webRootPath: site.paths.webRoot,
     };
   }
 }

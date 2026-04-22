@@ -47,6 +47,7 @@ export type LocalImportInput = {
 export type LocalImportResult = {
   localSiteId: string;
   localUrl: string;
+  webRootPath: string;
 };
 
 export interface SiteImporter {

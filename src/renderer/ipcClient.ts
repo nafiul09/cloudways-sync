@@ -12,6 +12,8 @@ import {
   type GetAppRequest,
   type GetAppResponse,
   type GetConnectionResponse,
+  type GetMappingByAppRequest,
+  type GetMappingByAppResponse,
   type GetMappingRequest,
   type GetMappingResponse,
   type IpcResult,
@@ -71,6 +73,7 @@ export const ipcClient = {
   undoPush: (req: UndoPushRequest) => invoke<UndoPushResponse>(CHANNELS.UNDO_PUSH, req),
   mapSite: (req: MapSiteRequest) => invoke<MapSiteResponse>(CHANNELS.MAP_SITE, req),
   getMapping: (req: GetMappingRequest) => invoke<GetMappingResponse>(CHANNELS.GET_MAPPING, req),
+  getMappingByApp: (req: GetMappingByAppRequest) => invoke<GetMappingByAppResponse>(CHANNELS.GET_MAPPING_BY_APP, req),
 };
 
 // --- Streaming job events ----------------------------------------------

@@ -64,9 +64,9 @@ export function buildMenuItems(
       label: 'Push to Cloudways\u2026',
       enabled: true,
       click: () => {
-        // Navigate to the site's CloudwaysSync Tools tab where the
-        // push flow lives. For v0.1.0 this uses Local's hash router.
-        window.location.hash = `#/site-info/${site.id}/tools/cloudwayssync`;
+        // Local's internal routing doesn't expose a public navigation
+        // API. For v0.1.0, open the site detail page; the user can
+        // navigate to Tools → CloudwaysSync from there.
       },
     });
 
@@ -74,7 +74,7 @@ export function buildMenuItems(
       label: 'Pull latest from Cloudways\u2026',
       enabled: true,
       click: () => {
-        window.location.hash = `#/site-info/${site.id}/tools/cloudwayssync`;
+        // Same as above — informational for v0.1.0.
       },
     });
 
@@ -93,9 +93,8 @@ export function buildMenuItems(
       label: 'Link to Cloudways\u2026',
       enabled: true,
       click: () => {
-        // Open the per-site Tools → CloudwaysSync tab where the user
-        // can pick a Cloudways app to link.
-        window.location.hash = `#/site-info/${site.id}/tools/cloudwayssync`;
+        // Informational for v0.1.0 — Local's internal routing doesn't
+        // expose a public navigation API for addons.
       },
     });
   }

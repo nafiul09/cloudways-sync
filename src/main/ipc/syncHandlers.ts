@@ -13,6 +13,8 @@ import {
   CHANNELS,
   type CancelJobRequest,
   type CancelJobResponse,
+  type GetMappingByAppRequest,
+  type GetMappingByAppResponse,
   type GetMappingRequest,
   type GetMappingResponse,
   type IpcResult,
@@ -139,6 +141,21 @@ export function registerSyncHandlers({
           emitProgress: (event: JobProgressEvent) => sendIPCEvent(CHANNELS.JOB_PROGRESS, event),
         });
         const result = await orchestrator.run(pullPlan);
+
+        // After successful pull, save a mapping so push can find the local site
+        if (result.status === 'success' && result.localSiteId) {
+          await siteMapper.set({
+            localSiteId: result.localSiteId,
+            serverId: pullPlan.serverId,
+            appId: pullPlan.appId,
+            appLabel: pullPlan.destinationName,
+            remoteUrl: '',
+            localUrl: result.localUrl ?? '',
+            webRootPath: result.webRootPath ?? '',
+            createdAt: new Date().toISOString(),
+          });
+        }
+
         sendIPCEvent(CHANNELS.JOB_DONE, result satisfies JobDoneEvent);
         return result;
       }
@@ -309,6 +326,17 @@ export function registerSyncHandlers({
         throw new CloudwaysError('AUTH_INVALID', 'localSiteId is required.', { retriable: false });
       }
       const mapping = await siteMapper.get(payload.localSiteId);
+      return { mapping };
+    });
+  });
+
+  addIpcAsyncListener(CHANNELS.GET_MAPPING_BY_APP, (...args: unknown[]) => {
+    const payload = args[0] as GetMappingByAppRequest | undefined;
+    return runHandler<GetMappingByAppResponse>(async () => {
+      if (typeof payload?.serverId !== 'number' || typeof payload?.appId !== 'number') {
+        throw new CloudwaysError('AUTH_INVALID', 'serverId and appId are required.', { retriable: false });
+      }
+      const mapping = await siteMapper.getByApp(payload.serverId, payload.appId);
       return { mapping };
     });
   });

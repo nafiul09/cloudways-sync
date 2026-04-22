@@ -154,7 +154,7 @@ describe('PullOrchestrator', () => {
         expect(input.dbDumpPath.endsWith('.sql.gz')).toBe(true);
         expect(fs.existsSync(path.join(input.wpContentPath, 'themes', 'twentytwentyfour', 'style.css'))).toBe(true);
         expect(fs.existsSync(input.manifestPath)).toBe(true);
-        return { localSiteId: 'local-1', localUrl: 'http://pulled-site.local' };
+        return { localSiteId: 'local-1', localUrl: 'http://pulled-site.local', webRootPath: '/tmp/sites/pulled-site/app/public' };
       }),
     };
     const progress: string[] = [];
@@ -202,7 +202,7 @@ describe('PullOrchestrator', () => {
       importPulledSite: vi.fn(async (input) => {
         expect(input.importDatabase).toBe(false);
         expect(input.importWpContent).toBe(true);
-        return { localSiteId: 'local-2', localUrl: 'http://content-only.local' };
+        return { localSiteId: 'local-2', localUrl: 'http://content-only.local', webRootPath: '/tmp/sites/content-only/app/public' };
       }),
     };
     const progress: string[] = [];
@@ -250,7 +250,7 @@ describe('PullOrchestrator', () => {
       importPulledSite: vi.fn(async (input) => {
         expect(input.importDatabase).toBe(true);
         expect(input.importWpContent).toBe(false);
-        return { localSiteId: 'local-3', localUrl: 'http://db-only.local' };
+        return { localSiteId: 'local-3', localUrl: 'http://db-only.local', webRootPath: '/tmp/sites/db-only/app/public' };
       }),
     };
     const progress: string[] = [];

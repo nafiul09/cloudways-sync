@@ -213,6 +213,7 @@ export class PullOrchestrator {
         status: 'success',
         localSiteId: imported.localSiteId,
         localUrl: imported.localUrl,
+        webRootPath: imported.webRootPath,
         manifestPath,
       };
     } finally {
