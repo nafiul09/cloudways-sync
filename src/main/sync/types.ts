@@ -24,6 +24,10 @@ export type LocalImportInput = {
   wpContentPath: string;
   manifestPath: string;
   metadata: PullMetadata;
+  /** When false, skip DB import + search-replace (content-only pull). */
+  importDatabase: boolean;
+  /** When false, skip wp-content copy (DB-only pull). */
+  importWpContent: boolean;
 };
 
 export type LocalImportResult = {

@@ -1,5 +1,7 @@
+import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import type { ApiClient } from '../cloudways/ApiClient';
 import type { App, Server } from '../cloudways/schemas';
 import { RemoteError } from '../remote/errors';
@@ -13,7 +15,10 @@ import {
   wpOptionGet,
 } from '../remote/wpCli';
 import type { JobProgressEvent, RunJobResponse } from '../../shared/ipcTypes';
+import { shouldSkipStep, tarExcludeFlags } from './Selective';
 import type { PullMetadata, PullPlan, SiteImporter } from './types';
+
+const execFileAsync = promisify(execFile);
 
 export type PullOrchestratorOptions = {
   client: ApiClient;
@@ -52,7 +57,9 @@ export class PullOrchestrator {
     let remoteSql: string | undefined;
     let remoteSqlGz: string | undefined;
     let sftpSqlGz: string | undefined;
+    let remoteContentTarGz: string | undefined;
     const localSqlGz = path.join(stagingDir, `cws-${jobId}.sql.gz`);
+    const localContentTarGz = path.join(stagingDir, `cws-${jobId}-wpcontent.tar.gz`);
     const manifestPath = path.join(jobDir, 'manifest.json');
 
     await fs.promises.mkdir(stagingDir, { recursive: true });
@@ -108,41 +115,67 @@ export class PullOrchestrator {
         });
       }
 
-      await this.step(jobId, 'db-export', async () => {
-        await wpCli({ ssh: ssh as SshClient, appPublicPath }, [
-          'db',
-          'export',
-          remoteSql as string,
-          '--add-drop-table',
-        ], { timeoutMs: 10 * 60 * 1000 });
-        await execChecked(ssh as SshClient, `gzip -f ${shellQuote(remoteSql as string)}`);
-      });
-
-      await this.step(jobId, 'download-db', async () => {
-        await sftp?.connect();
-        await sftp?.download(sftpSqlGz as string, localSqlGz, {
-          onProgress: (e) => {
-            this.progress(jobId, 'download-db', 'running', e.remotePath, e.bytesTransferred, e.totalBytes);
-          },
+      if (shouldSkipStep('db-export', plan.includes)) {
+        this.progress(jobId, 'db-export', 'skipped');
+        this.progress(jobId, 'download-db', 'skipped');
+      } else {
+        await this.step(jobId, 'db-export', async () => {
+          await wpCli({ ssh: ssh as SshClient, appPublicPath }, [
+            'db',
+            'export',
+            remoteSql as string,
+            '--add-drop-table',
+          ], { timeoutMs: 10 * 60 * 1000 });
+          await execChecked(ssh as SshClient, `gzip -f ${shellQuote(remoteSql as string)}`);
         });
-      });
 
-      await this.step(jobId, 'download-content', async () => {
-        await sftp?.mirror('public_html/wp-content', wpContentDir, {
-          exclude: [
-            'cache/**',
-            'uploads/cache/**',
-            'backup*/**',
-            '**/.git/**',
-            '**/node_modules/**',
-            '**/*.log',
-            '**/error_log',
-          ],
-          onProgress: (e) => {
-            this.progress(jobId, 'download-content', 'running', e.remotePath, e.bytesTransferred, e.totalBytes);
-          },
+        await this.step(jobId, 'download-db', async () => {
+          await sftp?.connect();
+          await this.runWithIdleWatchdog(sftp, 'download-db', (mark) =>
+            sftp!.download(sftpSqlGz as string, localSqlGz, {
+              onProgress: (e) => {
+                mark();
+                this.progress(jobId, 'download-db', 'running', e.remotePath, e.bytesTransferred, e.totalBytes);
+              },
+            }),
+          );
         });
-      });
+      }
+
+      if (shouldSkipStep('download-content', plan.includes)) {
+        this.progress(jobId, 'download-content', 'skipped');
+      } else {
+        await this.step(jobId, 'download-content', async () => {
+          remoteContentTarGz = `${appRootPath}/private_html/cws-${jobId}-wpcontent.tar.gz`;
+          const sftpContentTarGz = `private_html/cws-${jobId}-wpcontent.tar.gz`;
+
+          this.progress(jobId, 'download-content', 'running', 'Archiving wp-content on server…');
+          await execChecked(
+            ssh as SshClient,
+            `tar czf ${shellQuote(remoteContentTarGz)} ` +
+              `${tarExcludeFlags(plan.includes)} ` +
+              `-C ${shellQuote(cloudwaysAppPublicPath(app.sys_user as string))} wp-content`,
+          );
+
+          await sftp?.end();
+          await sftp?.connect();
+
+          this.progress(jobId, 'download-content', 'running', 'Downloading archive…');
+          await this.runWithIdleWatchdog(sftp, 'download-content', (mark) =>
+            sftp!.download(sftpContentTarGz, localContentTarGz, {
+              onProgress: (e) => {
+                mark();
+                this.progress(jobId, 'download-content', 'running', 'Downloading archive…', e.bytesTransferred, e.totalBytes);
+              },
+            }),
+          );
+
+          this.progress(jobId, 'download-content', 'running', 'Extracting archive…');
+          await execFileAsync('tar', ['xzf', localContentTarGz, '-C', stagingDir], {
+            timeout: 5 * 60 * 1000,
+          });
+        });
+      }
 
       await this.step(jobId, 'manifest', async () => {
         await writeManifest(manifestPath, {
@@ -166,11 +199,14 @@ export class PullOrchestrator {
           wpContentPath: wpContentDir,
           manifestPath,
           metadata,
+          importDatabase: plan.includes.database,
+          importWpContent: plan.includes.wpContent,
         }),
       );
-      this.progress(jobId, 'local-content', 'success');
-      this.progress(jobId, 'local-db', 'success');
-      this.progress(jobId, 'search-replace', 'success');
+      // NOTE: local-content / local-db / search-replace are sub-phases
+      // of importPulledSite that aren't independently instrumented
+      // yet — don't emit fake success for them; the UI should treat
+      // them as covered by local-site.
 
       return {
         jobId,
@@ -180,7 +216,7 @@ export class PullOrchestrator {
         manifestPath,
       };
     } finally {
-      await cleanupRemote(ssh, remoteSql, remoteSqlGz);
+      await cleanupRemote(ssh, remoteSql, remoteSqlGz, remoteContentTarGz);
       await sftp?.end();
       await ssh?.end();
     }
@@ -225,6 +261,52 @@ export class PullOrchestrator {
         password: primary.password,
       },
     };
+  }
+
+  /** Run an SFTP operation with an idle watchdog. If the caller-
+   * supplied `mark()` function isn't called for `idleTimeoutMs`, we
+   * force-close the SFTP connection, which causes any in-flight RPC
+   * inside the operation to reject. This is the safety net that
+   * catches hangs the per-RPC SFTP timeouts miss (e.g., an SSH
+   * session that keeps the TCP socket alive via keepalive but stops
+   * delivering packets between files). */
+  private async runWithIdleWatchdog<T>(
+    sftp: SftpClient | undefined,
+    label: string,
+    fn: (mark: () => void) => Promise<T>,
+    idleTimeoutMs = 3 * 60 * 1000,
+  ): Promise<T> {
+    let lastActivity = Date.now();
+    let aborted = false;
+    const mark = () => {
+      lastActivity = Date.now();
+    };
+    const watchdog = setInterval(() => {
+      if (Date.now() - lastActivity >= idleTimeoutMs) {
+        aborted = true;
+        clearInterval(watchdog);
+        // Force-close the SFTP socket so the pending RPC rejects.
+        // Best-effort: we swallow any error here because we're about
+        // to throw our own.
+        sftp?.end().catch(() => undefined);
+      }
+    }, Math.min(idleTimeoutMs, 15_000));
+    (watchdog as unknown as { unref?: () => void }).unref?.();
+
+    try {
+      return await fn(mark);
+    } catch (err) {
+      if (aborted) {
+        throw new RemoteError(
+          'SFTP_FAILED',
+          `SFTP ${label} stalled: no file activity for ${Math.round(idleTimeoutMs / 1000)}s. The remote server stopped responding.`,
+          { retriable: true, detail: { idleTimeoutMs } },
+        );
+      }
+      throw err;
+    } finally {
+      clearInterval(watchdog);
+    }
   }
 
   private async step<T>(jobId: string, stepId: string, fn: () => Promise<T>): Promise<T> {
@@ -283,9 +365,13 @@ async function collectMetadata(ssh: SshClient, appPublicPath: string): Promise<P
 async function execChecked(ssh: SshClient, command: string): Promise<void> {
   const res = await ssh.exec(command);
   if (res.code !== 0) {
-    throw new RemoteError('SSH_COMMAND_FAILED', `Remote command failed: ${command}`, {
+    const stderr = res.stderr?.trim();
+    const msg = stderr
+      ? `Remote command failed (exit ${res.code}): ${stderr}`
+      : `Remote command failed (exit ${res.code}): ${command}`;
+    throw new RemoteError('SSH_COMMAND_FAILED', msg, {
       retriable: false,
-      detail: { code: res.code, stderr: res.stderr },
+      detail: { code: res.code, stderr: res.stderr, command },
     });
   }
 }

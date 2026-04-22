@@ -152,6 +152,14 @@ export type SmokeAppResponse = {
 export type PullIncludes = {
   database: boolean;
   wpContent: boolean;
+  /** Granular wp-content sub-sections. Only consulted when
+   * `wpContent` is true — if `wpContent` is false the entire
+   * wp-content dir is skipped regardless of these flags. */
+  uploads: boolean;
+  plugins: boolean;
+  themes: boolean;
+  muPlugins: boolean;
+  languages: boolean;
 };
 
 export type PlanPullRequest = {

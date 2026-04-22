@@ -32,7 +32,7 @@ export class LocalSiteImporter implements SiteImporter {
     const slug = toSiteSlug(input.siteName);
     const sitePath = path.join(this.sitesRoot, slug);
     const siteDomain = `${slug}.local`;
-    const sqlPath = await ensureSqlDump(input.dbDumpPath);
+    const sqlPath = input.importDatabase ? await ensureSqlDump(input.dbDumpPath) : undefined;
 
     const site = await this.services.addSite.addSite({
       newSiteInfo: {
@@ -55,19 +55,25 @@ export class LocalSiteImporter implements SiteImporter {
     await this.services.siteProcessManager.start(site);
     await this.services.siteDatabase.waitForDB(site);
 
-    const targetWpContent = path.join(site.paths.webRoot, 'wp-content');
-    await fs.promises.rm(targetWpContent, { recursive: true, force: true });
-    await fs.promises.cp(input.wpContentPath, targetWpContent, { recursive: true });
+    if (input.importWpContent) {
+      const targetWpContent = path.join(site.paths.webRoot, 'wp-content');
+      await fs.promises.rm(targetWpContent, { recursive: true, force: true });
+      await fs.promises.cp(input.wpContentPath, targetWpContent, { recursive: true });
+    }
 
-    await this.services.importSQLFile(site, sqlPath);
     const localUrl = site.url || `http://${siteDomain}`;
-    await this.services.wpCli.run(site, [
-      'search-replace',
-      input.sourceUrl,
-      localUrl,
-      '--all-tables',
-      '--skip-columns=guid',
-    ]);
+
+    if (input.importDatabase && sqlPath) {
+      await this.services.importSQLFile(site, sqlPath);
+      await this.services.wpCli.run(site, [
+        'search-replace',
+        input.sourceUrl,
+        localUrl,
+        '--all-tables',
+        '--skip-columns=guid',
+      ]);
+    }
+
     await this.services.wpCli.run(site, ['cache', 'flush'], { ignoreErrors: true });
     await this.services.wpCli.run(site, ['rewrite', 'flush'], { ignoreErrors: true });
 
