@@ -1,0 +1,75 @@
+{
+  "name": "local-addon-cloudwayssync",
+  "productName": "CloudwaysSync",
+  "version": "0.1.0",
+  "description": "CloudwaysSync for Local — Cloudways ↔ Local, one click.",
+  "author": "CloudwaysSync contributors",
+  "license": "MIT",
+  "keywords": [
+    "local-addon"
+  ],
+  "slug": "cloudwayssync",
+  "icon": "icon.svg",
+  "bgColor": "#2563eb",
+  "main": "lib/main/index.js",
+  "renderer": "lib/renderer/index.js",
+  "engines": {
+    "node": ">=20",
+    "local-by-flywheel": ">=6.7.0"
+  },
+  "files": [
+    "lib/",
+    "package.json",
+    "README.md",
+    "LICENSE",
+    "icon.svg"
+  ],
+  "scripts": {
+    "build": "npm run build:main && npm run build:renderer",
+    "build:main": "tsc -p tsconfig.main.json",
+    "build:renderer": "vite build",
+    "dev": "npm run build:main -- --watch & vite build --watch",
+    "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
+    "lint": "oxlint src",
+    "format": "oxlint src --fix",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "link": "node scripts/link-to-local.mjs",
+    "unlink": "node scripts/unlink-from-local.mjs",
+    "smoke:cloudways": "node scripts/smoke-cloudways.mjs",
+    "package": "node scripts/build-addon-zip.mjs"
+  },
+  "dependencies": {
+    "archiver": "^7.0.1",
+    "extract-zip": "^2.0.1",
+    "pino": "^9.5.0",
+    "ssh2": "^1.16.0",
+    "ssh2-sftp-client": "^11.0.0",
+    "undici": "^6.21.0",
+    "zod": "^3.23.8",
+    "zustand": "^5.0.1"
+  },
+  "devDependencies": {
+    "@getflywheel/local": "^10.0.0",
+    "@getflywheel/local-components": "^17.8.1",
+    "@testing-library/react": "^16.1.0",
+    "@types/archiver": "^6.0.3",
+    "@types/node": "^20.19.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@types/ssh2": "^1.15.1",
+    "@types/ssh2-sftp-client": "^9.0.4",
+    "@vitejs/plugin-react": "^4.3.4",
+    "jsdom": "^25.0.1",
+    "oxlint": "^0.15.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.3",
+    "vitest": "^2.1.8"
+  },
+  "peerDependencies": {
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0"
+  }
+}

@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+
+# Build output
+lib/
+dist/
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Env + secrets
+.env
+.env.*
+!.env.example
+
+# Test artifacts
+coverage/
+.vitest-cache/
+
+# Package output
+*.zip
+cloudsync-addon-*.tgz
+
+# TypeScript incremental
+*.tsbuildinfo
