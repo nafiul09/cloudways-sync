@@ -23,10 +23,7 @@ import type {
   AppSummary,
   JobProgressEvent,
   PullIncludes,
-  PushIncludes,
   ServerSummary,
-  SiteMapping,
-  UndoRecord,
 } from '../../../shared/ipcTypes';
 
 // Short human labels for the pull steps the orchestrator emits.
@@ -45,20 +42,6 @@ const PULL_STEP_LABELS: Record<string, string> = {
   'local-db': 'Importing DB into Local',
   'search-replace': 'Rewriting URLs',
   manifest: 'Writing manifest',
-};
-
-const PUSH_STEP_LABELS: Record<string, string> = {
-  validate: 'Validating',
-  'remote-backup': 'Backing up remote',
-  ssh: 'Connecting over SSH',
-  metadata: 'Reading remote metadata',
-  'local-export-db': 'Exporting local DB',
-  'upload-db': 'Uploading database',
-  'upload-content': 'Uploading wp-content',
-  'remote-db-import': 'Importing DB on server',
-  'search-replace': 'Rewriting URLs',
-  'cache-flush': 'Flushing caches',
-  cleanup: 'Cleaning up',
 };
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -393,6 +376,8 @@ function AppDetailView({
   const [pullBusy, setPullBusy] = useState(false);
   const [pullResult, setPullResult] = useState<string | undefined>();
   const [pullErr, setPullErr] = useState<string | undefined>();
+  const [credentialBusy, setCredentialBusy] = useState(false);
+  const [credentialErr, setCredentialErr] = useState<string | undefined>();
   const [pullStep, setPullStep] = useState<
     { stepId: string; percent?: number; detail?: string } | undefined
   >();
@@ -405,33 +390,9 @@ function AppDetailView({
     muPlugins: true,
     languages: true,
   });
-  // Push state
-  const [pushBusy, setPushBusy] = useState(false);
-  const [pushResult, setPushResult] = useState<string | undefined>();
-  const [pushErr, setPushErr] = useState<string | undefined>();
-  const [pushStep, setPushStep] = useState<
-    { stepId: string; percent?: number; detail?: string } | undefined
-  >();
-  const [pushIncludes, setPushIncludes] = useState<PushIncludes>({
-    database: true,
-    wpContent: true,
-    uploads: true,
-    plugins: true,
-    themes: true,
-    muPlugins: true,
-    languages: true,
-  });
-  const [lastPushUndoId, setLastPushUndoId] = useState<string | undefined>();
-  const [undoBusy, setUndoBusy] = useState(false);
-  const [undoResult, setUndoResult] = useState<string | undefined>();
-  const [undoErr, setUndoErr] = useState<string | undefined>();
-  // Which sync direction is the panel for ('pull' | 'push')
-  const [syncMode, setSyncMode] = useState<'pull' | 'push'>('pull');
-  // Site mapping for this CW app (set after pull or from existing mapping)
-  const [appMapping, setAppMapping] = useState<SiteMapping | null>(null);
 
-  // Subscribe to JOB_PROGRESS so buttons can surface which step is
-  // currently running. Handles both pull and push progress events.
+  // Subscribe to JOB_PROGRESS so the pull button can surface which step
+  // is currently running.
   useEffect(() => {
     const unsubscribe = subscribeJobProgress((event: JobProgressEvent) => {
       const percent =
@@ -440,19 +401,14 @@ function AppDetailView({
         typeof event.bytesTransferred === 'number'
           ? Math.min(100, Math.round((event.bytesTransferred / event.totalBytes) * 100))
           : undefined;
-      const stepInfo = { stepId: event.stepId, percent, detail: event.detail };
-
       if (event.status === 'running') {
-        // Route to the correct state based on which job is busy
-        if (pushBusy) setPushStep(stepInfo);
-        else setPullStep(stepInfo);
+        setPullStep({ stepId: event.stepId, percent, detail: event.detail });
       } else if (event.status === 'success' || event.status === 'failed') {
-        if (pushBusy) setPushStep(undefined);
-        else setPullStep(undefined);
+        setPullStep(undefined);
       }
     });
     return unsubscribe;
-  }, [pushBusy]);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -461,7 +417,7 @@ function AppDetailView({
     setReveal(false);
     setPullResult(undefined);
     setPullErr(undefined);
-    setAppMapping(null);
+    setCredentialErr(undefined);
     ipcClient
       .getApp({ serverId, appId })
       .then((res) => {
@@ -470,13 +426,6 @@ function AppDetailView({
       .catch((e: IpcCallError) => {
         if (!cancelled) setErr(e.message);
       });
-    // Also look up whether a Local site is linked to this CW app
-    ipcClient
-      .getMappingByApp({ serverId, appId })
-      .then((res) => {
-        if (!cancelled) setAppMapping(res.mapping);
-      })
-      .catch(() => { /* non-fatal */ });
     return () => {
       cancelled = true;
     };
@@ -502,17 +451,11 @@ function AppDetailView({
         serverId: detail.serverId,
         appId: detail.id,
         destinationName: detail.label,
+        serverLabel: detail.server.label,
         includes,
       });
       const job = await ipcClient.runJob({ planId: plan.planId });
       setPullResult(job.localUrl ? `Pulled into Local: ${job.localUrl}` : 'Pull completed.');
-      // Refresh the mapping — pull creates one automatically
-      if (job.localSiteId) {
-        ipcClient
-          .getMappingByApp({ serverId: detail.serverId, appId: detail.id })
-          .then((res) => setAppMapping(res.mapping))
-          .catch(() => { /* non-fatal */ });
-      }
     } catch (e) {
       setPullErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -537,74 +480,22 @@ function AppDetailView({
     pullBusy && pullStep?.detail && (pullStep.stepId === 'download-content' || pullStep.stepId === 'download-db')
       ? pullStep.detail
       : undefined;
-
-  const runPush = async () => {
-    if (!appMapping?.localSiteId || !appMapping?.localUrl || !appMapping?.webRootPath) {
-      setPushErr('No Local site is linked to this Cloudways app. Pull first to create the link.');
-      return;
-    }
-    setPushBusy(true);
-    setPushResult(undefined);
-    setPushErr(undefined);
-    setPushStep(undefined);
-    setLastPushUndoId(undefined);
+  const createCredentials = async () => {
+    setCredentialBusy(true);
+    setCredentialErr(undefined);
     try {
-      const plan = await ipcClient.planPush({
-        serverId: detail.serverId,
-        appId: detail.id,
-        localSiteId: appMapping.localSiteId,
-        localUrl: appMapping.localUrl,
-        webRootPath: appMapping.webRootPath,
-        includes: pushIncludes,
+      const res = await ipcClient.createAppCredential({ serverId: detail.serverId, appId: detail.id });
+      setDetail({
+        ...detail,
+        sftp: res.sftp,
+        db: { ...detail.db, password: res.sftp.password },
       });
-      const job = await ipcClient.runJob({ planId: plan.planId });
-      setPushResult('Push completed successfully.');
-      // Try to find the undo record for this push
-      try {
-        const undos = await ipcClient.listUndo();
-        const latest = undos.records.find(
-          (r) => r.appId === detail.id && !r.undoneAt,
-        );
-        if (latest) setLastPushUndoId(latest.id);
-      } catch {
-        /* non-fatal */
-      }
     } catch (e) {
-      setPushErr(e instanceof Error ? e.message : String(e));
+      setCredentialErr(e instanceof Error ? e.message : String(e));
     } finally {
-      setPushBusy(false);
-      setPushStep(undefined);
+      setCredentialBusy(false);
     }
   };
-
-  const runUndo = async () => {
-    if (!lastPushUndoId) return;
-    setUndoBusy(true);
-    setUndoResult(undefined);
-    setUndoErr(undefined);
-    try {
-      await ipcClient.undoPush({ recordId: lastPushUndoId });
-      setUndoResult('Undo completed — remote site restored to pre-push state.');
-      setLastPushUndoId(undefined);
-    } catch (e) {
-      setUndoErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setUndoBusy(false);
-    }
-  };
-
-  const pushLabel = (() => {
-    if (!pushBusy) return 'Push to Cloudways';
-    if (!pushStep) return 'Pushing…';
-    const label = PUSH_STEP_LABELS[pushStep.stepId] ?? pushStep.stepId;
-    return pushStep.percent != null
-      ? `Pushing — ${label} (${pushStep.percent}%)`
-      : `Pushing — ${label}`;
-  })();
-  const pushSubLabel =
-    pushBusy && pushStep?.detail && (pushStep.stepId === 'upload-content' || pushStep.stepId === 'upload-db')
-      ? pushStep.detail
-      : undefined;
 
   return (
     <div>
@@ -620,80 +511,22 @@ function AppDetailView({
 
       {detail.isWordPress && (
         <>
-          {/* Sync mode tabs */}
-          <div style={syncTabStyles.tabs}>
-            <button
-              type="button"
-              style={syncMode === 'pull' ? syncTabStyles.tabActive : syncTabStyles.tab}
-              onClick={() => setSyncMode('pull')}
-            >
-              Pull
-            </button>
-            <button
-              type="button"
-              style={syncMode === 'push' ? syncTabStyles.tabActive : syncTabStyles.tab}
-              onClick={() => setSyncMode('push')}
-            >
-              Push
-            </button>
+          <div style={styles.actionBar}>
+            <Button onClick={runPull} disabled={pullBusy || !detail.sftp.password}>
+              {pullLabel}
+            </Button>
+            {pullSubLabel && (
+              <div style={{ marginTop: 6, fontSize: 11, opacity: 0.65 }}>
+                {pullSubLabel}
+              </div>
+            )}
           </div>
-
-          {syncMode === 'pull' && (
-            <>
-              <div style={styles.actionBar}>
-                <Button onClick={runPull} disabled={pullBusy || pushBusy}>
-                  {pullLabel}
-                </Button>
-                {pullSubLabel && (
-                  <div style={{ marginTop: 6, fontSize: 11, opacity: 0.65 }}>
-                    {pullSubLabel}
-                  </div>
-                )}
-              </div>
-              {!pullBusy && (
-                <SelectivePanel
-                  heading="Include in pull"
-                  includes={includes}
-                  onChange={setIncludes}
-                />
-              )}
-            </>
-          )}
-
-          {syncMode === 'push' && (
-            <>
-              {!appMapping && (
-                <Banner variant="neutral" style={{ marginBottom: 12 }}>
-                  Pull this app to Local first — that creates the link needed for push.
-                </Banner>
-              )}
-              <div style={styles.actionBar}>
-                <Button onClick={runPush} disabled={pushBusy || pullBusy || !appMapping}>
-                  {pushLabel}
-                </Button>
-                {lastPushUndoId && !pushBusy && (
-                  <Button
-                    onClick={runUndo}
-                    disabled={undoBusy}
-                    style={{ marginLeft: 8 }}
-                  >
-                    {undoBusy ? 'Restoring…' : 'Undo last push'}
-                  </Button>
-                )}
-                {pushSubLabel && (
-                  <div style={{ marginTop: 6, fontSize: 11, opacity: 0.65 }}>
-                    {pushSubLabel}
-                  </div>
-                )}
-              </div>
-              {!pushBusy && (
-                <SelectivePanel
-                  heading="Include in push"
-                  includes={pushIncludes}
-                  onChange={setPushIncludes}
-                />
-              )}
-            </>
+          {!pullBusy && (
+            <SelectivePanel
+              heading="Include in pull"
+              includes={includes}
+              onChange={setIncludes}
+            />
           )}
         </>
       )}
@@ -707,25 +540,12 @@ function AppDetailView({
           <Banner variant="success">{pullResult}</Banner>
         </div>
       )}
-      {pushErr && (
-        <div style={styles.banner}>
-          <Banner variant="error">{pushErr}</Banner>
-        </div>
-      )}
-      {pushResult && (
-        <div style={styles.banner}>
-          <Banner variant="success">{pushResult}</Banner>
-        </div>
-      )}
-      {undoErr && (
-        <div style={styles.banner}>
-          <Banner variant="error">{undoErr}</Banner>
-        </div>
-      )}
-      {undoResult && (
-        <div style={styles.banner}>
-          <Banner variant="success">{undoResult}</Banner>
-        </div>
+      {detail.isWordPress && !detail.sftp.password && (
+        <CredentialsMissingNotice
+          busy={credentialBusy}
+          error={credentialErr}
+          onCreate={createCredentials}
+        />
       )}
 
       {!detail.isWordPress && (
@@ -797,7 +617,13 @@ function AppDetailView({
         </Row>
       </ul>
 
-      {detail.isWordPress && <SmokeTestSection serverId={detail.serverId} appId={detail.id} />}
+      {detail.isWordPress && (
+        <SmokeTestSection
+          serverId={detail.serverId}
+          appId={detail.id}
+          hasApiPassword={Boolean(detail.sftp.password)}
+        />
+      )}
     </div>
   );
 }
@@ -808,9 +634,11 @@ function AppDetailView({
 function SmokeTestSection({
   serverId,
   appId,
+  hasApiPassword,
 }: {
   serverId: number;
   appId: number;
+  hasApiPassword: boolean;
 }): React.ReactElement {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ home: string; stderr: string; elapsedMs: number } | undefined>();
@@ -821,7 +649,10 @@ function SmokeTestSection({
     setError(undefined);
     setResult(undefined);
     try {
-      const res = await ipcClient.smokeApp({ serverId, appId });
+      const res = await ipcClient.smokeApp({
+        serverId,
+        appId,
+      });
       setResult({ home: res.home, stderr: res.stderr, elapsedMs: res.elapsedMs });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -835,8 +666,8 @@ function SmokeTestSection({
       <SectionHeader
         title="Connection test"
         action={
-          <Button onClick={run} disabled={busy}>
-            {busy ? 'Running…' : 'Run wp option get home'}
+          <Button onClick={run} disabled={busy || !hasApiPassword}>
+            {busy ? 'Testing…' : 'Test WP-CLI over SSH'}
           </Button>
         }
       />
@@ -861,6 +692,35 @@ function SmokeTestSection({
         </ul>
       )}
     </>
+  );
+}
+
+function CredentialsMissingNotice({
+  busy,
+  error,
+  onCreate,
+}: {
+  busy: boolean;
+  error?: string;
+  onCreate: () => void;
+}): React.ReactElement {
+  return (
+    <div style={styles.credentialsNotice}>
+      <div>
+        <Text style={styles.credentialsTitle}>SSH/SFTP access is missing for this app</Text>
+        <Text size="caption" style={styles.credentialsCopy}>
+          CloudwaysSync needs app-level SSH/SFTP credentials and SSH shell access before it can test, pull, or push this WordPress site.
+        </Text>
+      </div>
+      <Button onClick={onCreate} disabled={busy}>
+        {busy ? 'Creating…' : 'Create SSH/SFTP + shell access'}
+      </Button>
+      {error && (
+        <div style={styles.credentialsError}>
+          <Banner variant="error">{error}</Banner>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1052,37 +912,6 @@ function CopyButton({ value }: { value: string }): React.ReactElement {
   );
 }
 
-// --- Sync mode tabs ---
-
-const syncTabStyles: Record<string, React.CSSProperties> = {
-  tabs: {
-    display: 'flex',
-    gap: 0,
-    marginBottom: 12,
-    borderBottom: '1px solid rgba(255,255,255,0.1)',
-  },
-  tab: {
-    padding: '8px 16px',
-    background: 'transparent',
-    border: 'none',
-    borderBottom: '2px solid transparent',
-    color: 'rgba(255,255,255,0.5)',
-    cursor: 'pointer',
-    fontSize: 13,
-    fontWeight: 500,
-  },
-  tabActive: {
-    padding: '8px 16px',
-    background: 'transparent',
-    border: 'none',
-    borderBottom: '2px solid #51bb7b',
-    color: '#fff',
-    cursor: 'pointer',
-    fontSize: 13,
-    fontWeight: 600,
-  },
-};
-
 // --- Styles ---
 
 const RAIL_WIDTH = 260;
@@ -1155,6 +984,30 @@ const styles: Record<string, React.CSSProperties> = {
   monoValue: {
     fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
     fontSize: 13,
+  },
+  credentialsNotice: {
+    display: 'grid',
+    gridTemplateColumns: '1fr auto',
+    alignItems: 'center',
+    gap: 16,
+    marginBottom: 16,
+    padding: '14px 16px',
+    background: 'rgba(255,255,255,0.04)',
+    border: '1px solid rgba(255,255,255,0.08)',
+    borderRadius: 6,
+  },
+  credentialsTitle: {
+    display: 'block',
+    fontSize: 13,
+    fontWeight: 600,
+    marginBottom: 4,
+  },
+  credentialsCopy: {
+    display: 'block',
+    opacity: 0.62,
+  },
+  credentialsError: {
+    gridColumn: '1 / -1',
   },
   copyBtn: {
     marginLeft: 12,

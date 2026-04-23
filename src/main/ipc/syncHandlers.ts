@@ -1,6 +1,6 @@
 import type { ServiceContainerServices } from '@getflywheel/local/main';
 import { CloudwaysError } from '../cloudways/errors';
-import { EncryptionUnavailableError } from '../credentials';
+import { AppPasswordStore, EncryptionUnavailableError } from '../credentials';
 import { RemoteError } from '../remote/errors';
 import type { ConnectionService } from '../connection/service';
 import { JobStore } from '../sync/JobStore';
@@ -18,6 +18,7 @@ import {
   type GetMappingRequest,
   type GetMappingResponse,
   type IpcResult,
+  type ListMappingsResponse,
   type JobDoneEvent,
   type JobProgressEvent,
   type ListUndoResponse,
@@ -31,6 +32,8 @@ import {
   type RunJobResponse,
   type SerializedError,
   type SiteMapping,
+  type UnmapSiteRequest,
+  type UnmapSiteResponse,
   type UndoPushRequest,
   type UndoPushResponse,
 } from '../../shared/ipcTypes';
@@ -65,11 +68,12 @@ export type RegisterSyncOptions = {
   connection: ConnectionService;
   services: Pick<
     ServiceContainerServices,
-    'addSite' | 'siteProcessManager' | 'siteDatabase' | 'importSQLFile' | 'wpCli'
+    'addSite' | 'siteData' | 'siteProcessManager' | 'siteDatabase' | 'importSQLFile' | 'wpCli'
   >;
   userDataDir: string;
   sendIPCEvent: (channel: string, ...args: unknown[]) => void;
   jobs?: JobStore;
+  appPasswords?: AppPasswordStore;
 };
 
 export function registerSyncHandlers({
@@ -79,6 +83,7 @@ export function registerSyncHandlers({
   userDataDir,
   sendIPCEvent,
   jobs = new JobStore(),
+  appPasswords,
 }: RegisterSyncOptions): void {
   const undoLedger = new UndoLedger(userDataDir);
   const siteMapper = new SiteMapper(userDataDir);
@@ -91,6 +96,12 @@ export function registerSyncHandlers({
       }
       if (!payload.destinationName?.trim()) {
         throw new CloudwaysError('AUTH_INVALID', 'destinationName is required.', { retriable: false });
+      }
+      if (payload.sftpPassword?.trim()) {
+        if (!appPasswords) {
+          throw new EncryptionUnavailableError();
+        }
+        await appPasswords.set(payload.serverId, payload.appId, payload.sftpPassword);
       }
       const plan = jobs.createPullPlan(payload);
       return { planId: plan.id, steps: plan.steps };
@@ -137,6 +148,7 @@ export function registerSyncHandlers({
           client: connection.requireClient(),
           importer: new LocalSiteImporter({ services }),
           userDataDir,
+          getAppPassword: appPasswords ? (serverId, appId) => appPasswords.get(serverId, appId) : undefined,
           isCancelled: (jobId) => jobs.isCancelled(jobId),
           emitProgress: (event: JobProgressEvent) => sendIPCEvent(CHANNELS.JOB_PROGRESS, event),
         });
@@ -149,6 +161,7 @@ export function registerSyncHandlers({
             serverId: pullPlan.serverId,
             appId: pullPlan.appId,
             appLabel: pullPlan.destinationName,
+            serverLabel: pullPlan.serverLabel,
             remoteUrl: '',
             localUrl: result.localUrl ?? '',
             webRootPath: result.webRootPath ?? '',
@@ -203,6 +216,16 @@ export function registerSyncHandlers({
           client,
           undoLedger,
           userDataDir,
+          getAppPassword: appPasswords ? (serverId, appId) => appPasswords.get(serverId, appId) : undefined,
+          localDbDump: async (localSiteId, destination) => {
+            const site = services.siteData.getSite(localSiteId);
+            if (!site) throw new Error(`Local site "${localSiteId}" not found.`);
+            if (!services.siteProcessManager.hasRunningProcess(site)) {
+              await services.siteProcessManager.start(site);
+            }
+            await services.siteDatabase.waitForDB(site);
+            return services.siteDatabase.dump(site, destination);
+          },
           isCancelled: (jobId) => jobs.isCancelled(jobId),
           emitProgress: (event: JobProgressEvent) => sendIPCEvent(CHANNELS.JOB_PROGRESS, event),
         });
@@ -311,11 +334,32 @@ export function registerSyncHandlers({
         serverId: payload.serverId,
         appId: payload.appId,
         appLabel: payload.appLabel,
+        serverLabel: payload.serverLabel,
         remoteUrl: payload.remoteUrl ?? '',
         createdAt: new Date().toISOString(),
       };
+      if (payload.sftpPassword?.trim()) {
+        if (!appPasswords) {
+          throw new EncryptionUnavailableError();
+        }
+        await appPasswords.set(payload.serverId, payload.appId, payload.sftpPassword);
+      }
       await siteMapper.set(mapping);
       return { mapping };
+    });
+  });
+
+  addIpcAsyncListener(CHANNELS.UNMAP_SITE, (...args: unknown[]) => {
+    const payload = args[0] as UnmapSiteRequest | undefined;
+    return runHandler<UnmapSiteResponse>(async () => {
+      if (!payload?.localSiteId?.trim()) {
+        throw new CloudwaysError('AUTH_INVALID', 'localSiteId is required.', { retriable: false });
+      }
+      const removed = await siteMapper.delete(payload.localSiteId, {
+        serverId: payload.serverId,
+        appId: payload.appId,
+      });
+      return { removed };
     });
   });
 
@@ -338,6 +382,13 @@ export function registerSyncHandlers({
       }
       const mapping = await siteMapper.getByApp(payload.serverId, payload.appId);
       return { mapping };
+    });
+  });
+
+  addIpcAsyncListener(CHANNELS.LIST_MAPPINGS, () => {
+    return runHandler<ListMappingsResponse>(async () => {
+      const mappings = await siteMapper.list();
+      return { mappings };
     });
   });
 }

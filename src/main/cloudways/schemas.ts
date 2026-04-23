@@ -76,6 +76,20 @@ export const AppCredsResponseSchema = z.object({
 });
 export type AppCredsResponse = z.infer<typeof AppCredsResponseSchema>;
 
+export const CreateAppCredsResponseSchema = z
+  .object({
+    app_creds: z.array(AppCredentialSchema).optional(),
+    app_cred: AppCredentialSchema.optional(),
+    credential: AppCredentialSchema.optional(),
+    id: z.coerce.number().int().optional(),
+    sys_user: z.string().optional(),
+    username: z.string().optional(),
+    sys_password: z.string().optional(),
+    password: z.string().optional(),
+  })
+  .passthrough();
+export type CreateAppCredsResponse = z.infer<typeof CreateAppCredsResponseSchema>;
+
 // ---- Operation polling ----
 // Cloudways async endpoints return `{ operation_id }`, which we then
 // poll via `GET /operation/<operation_id>`. Some completed operations

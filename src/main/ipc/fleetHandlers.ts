@@ -7,7 +7,7 @@
 // `runHandler` wrapper in this module serialises back to the renderer.
 
 import { CloudwaysError } from '../cloudways/errors';
-import { EncryptionUnavailableError } from '../credentials';
+import { AppPasswordStore, EncryptionUnavailableError } from '../credentials';
 import type { ConnectionService } from '../connection/service';
 import type { App, Server } from '../cloudways/schemas';
 import {
@@ -84,9 +84,10 @@ export function toAppSummary(a: App, serverId: number): AppSummary {
 export type RegisterFleetOptions = {
   addIpcAsyncListener: AddIpcAsyncListener;
   connection: ConnectionService;
+  appPasswords?: AppPasswordStore;
 };
 
-export function registerFleetHandlers({ addIpcAsyncListener, connection }: RegisterFleetOptions): void {
+export function registerFleetHandlers({ addIpcAsyncListener, connection, appPasswords }: RegisterFleetOptions): void {
   const handlers: Array<readonly [string, (...args: unknown[]) => Promise<IpcResult<unknown>>]> = [
     [
       CHANNELS.LIST_SERVERS,
@@ -150,6 +151,8 @@ export function registerFleetHandlers({ addIpcAsyncListener, connection }: Regis
             throw err;
           });
           const primary = creds[0];
+          const storedPassword = appPasswords ? await appPasswords.get(server.id, app.id) : undefined;
+          const password = primary?.password || storedPassword;
 
           const detail: AppDetail = {
             ...toAppSummary(app, server.id),
@@ -157,12 +160,12 @@ export function registerFleetHandlers({ addIpcAsyncListener, connection }: Regis
             sftp: {
               host: server.public_ip ?? server.server_fqdn ?? '',
               user: primary?.sys_user ?? app.sys_user ?? '',
-              password: primary?.password,
+              password,
             },
             db: {
               name: app.mysql_db_name,
               user: app.mysql_user,
-              password: primary?.password,
+              password,
             },
           };
           return { app: detail };

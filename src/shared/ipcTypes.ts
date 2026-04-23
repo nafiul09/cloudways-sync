@@ -15,6 +15,7 @@ export const CHANNELS = {
 
   // Remote diagnostics (Phase 4 smoke test)
   SMOKE_APP: 'cs:smokeApp',
+  CREATE_APP_CREDENTIAL: 'cs:createAppCredential',
 
   // Planning + execution
   PLAN_PULL: 'cs:planPull',
@@ -32,8 +33,10 @@ export const CHANNELS = {
 
   // Site mapping
   MAP_SITE: 'cs:mapSite',
+  UNMAP_SITE: 'cs:unmapSite',
   GET_MAPPING: 'cs:getMapping',
   GET_MAPPING_BY_APP: 'cs:getMappingByApp',
+  LIST_MAPPINGS: 'cs:listMappings',
 } as const;
 
 export type ChannelName = (typeof CHANNELS)[keyof typeof CHANNELS];
@@ -136,7 +139,7 @@ export type GetAppResponse = { app: AppDetail };
 // Used by the renderer's App detail pane to verify SSH + wp-cli are
 // wired up before a real Pull is attempted.
 
-export type SmokeAppRequest = { serverId: number; appId: number };
+export type SmokeAppRequest = { serverId: number; appId: number; sftpPassword?: string };
 export type SmokeAppResponse = {
   /** Public path we ran wp-cli in (for debugging). */
   appPublicPath: string;
@@ -146,6 +149,15 @@ export type SmokeAppResponse = {
   stderr: string;
   /** Milliseconds elapsed for the whole round-trip. */
   elapsedMs: number;
+};
+
+export type CreateAppCredentialRequest = { serverId: number; appId: number };
+export type CreateAppCredentialResponse = {
+  sftp: {
+    host: string;
+    user: string;
+    password: string;
+  };
 };
 
 // --- Phase 5: Pull planning + execution ---
@@ -167,6 +179,12 @@ export type PlanPullRequest = {
   serverId: number;
   appId: number;
   destinationName: string;
+  /** Human-readable server name, persisted in SiteMapping after pull. */
+  serverLabel?: string;
+  /** Optional user-supplied app SSH/SFTP password. Stored encrypted by main. */
+  sftpPassword?: string;
+  /** When set, pull updates this existing Local site instead of creating a new one. */
+  localSiteId?: string;
   includes?: Partial<PullIncludes>;
 };
 
@@ -191,7 +209,6 @@ export type RunJobResponse = {
   localSiteId?: string;
   localUrl?: string;
   webRootPath?: string;
-  manifestPath?: string;
 };
 
 export type CancelJobRequest = { jobId: string };
@@ -265,6 +282,8 @@ export type SiteMapping = {
   serverId: number;
   appId: number;
   appLabel: string;
+  /** Human-readable server name (e.g. "LiveServer"). */
+  serverLabel?: string;
   remoteUrl: string;
   createdAt: string;
   /** Local site URL (e.g. http://my-site.local). Set after pull. */
@@ -278,12 +297,20 @@ export type MapSiteRequest = {
   serverId: number;
   appId: number;
   appLabel: string;
+  serverLabel?: string;
   remoteUrl: string;
+  /** Optional user-supplied app SSH/SFTP password. Stored encrypted by main. */
+  sftpPassword?: string;
 };
 export type MapSiteResponse = { mapping: SiteMapping };
+
+export type UnmapSiteRequest = { localSiteId: string; serverId?: number; appId?: number };
+export type UnmapSiteResponse = { removed: boolean };
 
 export type GetMappingRequest = { localSiteId: string };
 export type GetMappingResponse = { mapping: SiteMapping | null };
 
 export type GetMappingByAppRequest = { serverId: number; appId: number };
 export type GetMappingByAppResponse = { mapping: SiteMapping | null };
+
+export type ListMappingsResponse = { mappings: SiteMapping[] };

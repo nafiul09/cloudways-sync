@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import type { ApiClient } from '../cloudways/ApiClient';
+import { CloudwaysError } from '../cloudways/errors';
 import type { App, Server } from '../cloudways/schemas';
 import { RemoteError } from '../remote/errors';
 import { SftpClient, type SftpConnectConfig } from '../remote/SftpClient';
@@ -16,6 +17,7 @@ import {
 } from '../remote/wpCli';
 import type { JobProgressEvent, RunJobResponse } from '../../shared/ipcTypes';
 import { shouldSkipStep, tarExcludeFlags } from './Selective';
+import { sweepStaleJobs } from './cleanup';
 import type { PullMetadata, PullPlan, SiteImporter } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -26,6 +28,7 @@ export type PullOrchestratorOptions = {
   userDataDir: string;
   sshFactory?: (config: SshConnectConfig) => SshClient;
   sftpFactory?: (config: SftpConnectConfig) => SftpClient;
+  getAppPassword?: (serverId: number, appId: number) => Promise<string | undefined>;
   emitProgress?: (event: JobProgressEvent) => void;
   isCancelled?: (jobId: string) => boolean;
 };
@@ -36,6 +39,7 @@ export class PullOrchestrator {
   private readonly userDataDir: string;
   private readonly sshFactory: (config: SshConnectConfig) => SshClient;
   private readonly sftpFactory: (config: SftpConnectConfig) => SftpClient;
+  private readonly getAppPassword?: (serverId: number, appId: number) => Promise<string | undefined>;
   private readonly emitProgress?: (event: JobProgressEvent) => void;
   private readonly isCancelled?: (jobId: string) => boolean;
 
@@ -45,6 +49,7 @@ export class PullOrchestrator {
     this.userDataDir = opts.userDataDir;
     this.sshFactory = opts.sshFactory ?? ((config) => new SshClient(config));
     this.sftpFactory = opts.sftpFactory ?? ((config) => new SftpClient(config));
+    this.getAppPassword = opts.getAppPassword;
     this.emitProgress = opts.emitProgress;
     this.isCancelled = opts.isCancelled;
   }
@@ -85,12 +90,22 @@ export class PullOrchestrator {
       });
 
       await this.step(jobId, 'backup', async () => {
-        const operationId = await this.client.triggerAppBackup(server.id, app.id);
-        await this.client.waitForOperation(operationId, {
-          onTick: (op) => {
-            this.progress(jobId, 'backup', 'running', op.message || String(op.status));
-          },
-        });
+        try {
+          const operationId = await this.client.triggerAppBackup(server.id, app.id);
+          await this.client.waitForOperation(operationId, {
+            onTick: (op) => {
+              this.progress(jobId, 'backup', 'running', op.message || String(op.status));
+            },
+          });
+        } catch (err) {
+          // 422 typically means a backup was taken recently or is in progress.
+          // This is non-fatal — we can still pull from the current server state.
+          if (err instanceof CloudwaysError && err.status === 422) {
+            this.progress(jobId, 'backup', 'running', 'Skipped — recent backup exists');
+          } else {
+            throw err;
+          }
+        }
       });
 
       const appPublicPath = cloudwaysAppPublicPath(app.sys_user as string);
@@ -201,6 +216,7 @@ export class PullOrchestrator {
           metadata,
           importDatabase: plan.includes.database,
           importWpContent: plan.includes.wpContent,
+          existingSiteId: plan.localSiteId,
         }),
       );
       // NOTE: local-content / local-db / search-replace are sub-phases
@@ -214,12 +230,15 @@ export class PullOrchestrator {
         localSiteId: imported.localSiteId,
         localUrl: imported.localUrl,
         webRootPath: imported.webRootPath,
-        manifestPath,
       };
     } finally {
       await cleanupRemote(ssh, remoteSql, remoteSqlGz, remoteContentTarGz);
       await sftp?.end();
       await ssh?.end();
+      // Clean up local staging — no reason to keep downloaded archives
+      await fs.promises.rm(jobDir, { recursive: true, force: true }).catch(() => undefined);
+      // Sweep stale job dirs left by previous runs that didn't clean up
+      await sweepStaleJobs(this.userDataDir).catch(() => undefined);
     }
   }
 
@@ -236,20 +255,31 @@ export class PullOrchestrator {
     if (!app) {
       throw new RemoteError('SSH_COMMAND_FAILED', `App ${appId} not found on server.`, { retriable: false });
     }
-    const creds = await this.client.getAppCreds(server.id, app.id);
-    const primary = creds[0];
+    await this.client.ensureAppSshAccess(server.id, app.id);
+    let creds = await this.client.getAppCreds(server.id, app.id);
+    let primary = creds[0];
+
+    // Re-fetch once after enabling shell access; Cloudways may expose
+    // app passwords only after the toggle has propagated.
+    if (!primary?.password) {
+      creds = await this.client.getAppCreds(server.id, app.id);
+      primary = creds[0];
+    }
+
     const host = server.public_ip ?? server.server_fqdn;
     const username = primary?.sys_user ?? app.sys_user;
+    const storedPassword = this.getAppPassword ? await this.getAppPassword(server.id, app.id) : undefined;
+    const password = primary?.password || storedPassword;
     if (!host) {
       throw new RemoteError('SSH_NETWORK', 'Cloudways did not return a server address.', { retriable: false });
     }
     if (!username) {
       throw new RemoteError('SSH_AUTH_FAILED', 'No SSH user available for this app.', { retriable: false });
     }
-    if (!primary?.password) {
+    if (!password) {
       throw new RemoteError(
         'SSH_AUTH_FAILED',
-        'No password available. This app may be ssh-key-only; Phase 5 password auth cannot continue yet.',
+        'No SSH/SFTP password available. Enter the Cloudways application password in the link step, then try again.',
         { retriable: false },
       );
     }
@@ -259,7 +289,7 @@ export class PullOrchestrator {
       auth: {
         host,
         username,
-        password: primary.password,
+        password,
       },
     };
   }

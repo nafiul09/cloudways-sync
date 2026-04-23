@@ -53,6 +53,8 @@ export class JobStore {
       serverId: req.serverId,
       appId: req.appId,
       destinationName: req.destinationName.trim(),
+      serverLabel: req.serverLabel,
+      localSiteId: req.localSiteId,
       includes: { ...DEFAULT_INCLUDES, ...req.includes },
       steps: PULL_STEPS.map((step) => ({ ...step, status: 'pending' })),
       createdAt: now,

@@ -296,18 +296,23 @@ export class SftpClient {
     }
   }
 
-  /** Upload a single local file. */
+  /** Upload a single local file. Uses a read-stream with bytesRead
+   * polling for progress — the ssh2-sftp-client `'upload'` event is
+   * unreliable on many Cloudways server configurations. When all bytes
+   * have been read and `put()` still hasn't resolved after a grace
+   * period, we treat the upload as complete (the underlying stream
+   * 'close' event sometimes never fires). */
   async upload(
     localPath: string,
     remotePath: string,
     opts: TransferOptions = {},
   ): Promise<void> {
     const client = this.require();
-    let total: number | undefined;
+    let total: number;
     try {
       const st = await fs.promises.stat(localPath);
       total = st.size;
-    } catch (err) {
+    } catch {
       throw SftpNotFound(localPath);
     }
 
@@ -321,31 +326,70 @@ export class SftpClient {
       }
     }
 
-    const onData = (info: unknown) => {
-      if (!opts.onProgress) return;
-      const chunk = info as { source?: string; destination?: string; bytesWritten?: number };
-      if (!chunk || chunk.destination !== remotePath) return;
-      opts.onProgress({
-        remotePath,
-        localPath,
-        bytesTransferred: typeof chunk.bytesWritten === 'number' ? chunk.bytesWritten : 0,
-        totalBytes: total,
-      });
-    };
-    client.on('upload', onData);
+    opts.onProgress?.({ remotePath, localPath, bytesTransferred: 0, totalBytes: total });
+
+    const readStream = fs.createReadStream(localPath);
+    let lastBytesRead = 0;
+    let lastProgressAt = Date.now();
+    let stallReason: string | undefined;
+    const stallMs = this.stallTimeoutMs;
+    const POLL_MS = 3_000;
+    // Grace period after all bytes read before we force-resolve.
+    const DONE_GRACE_MS = 30_000;
+    let doneAt: number | undefined;
+    let forceResolve: (() => void) | undefined;
+
+    const pollTimer = setInterval(() => {
+      const current = readStream.bytesRead;
+      if (current > lastBytesRead) {
+        lastBytesRead = current;
+        lastProgressAt = Date.now();
+        opts.onProgress?.({
+          remotePath,
+          localPath,
+          bytesTransferred: current,
+          totalBytes: total,
+        });
+      }
+
+      // All bytes have been read from the local file
+      if (current >= total) {
+        if (!doneAt) doneAt = Date.now();
+        // If put() still hasn't resolved after grace period, force-resolve
+        if (Date.now() - doneAt >= DONE_GRACE_MS) {
+          clearInterval(pollTimer);
+          forceResolve?.();
+          return;
+        }
+      } else if (stallMs > 0 && Date.now() - lastProgressAt >= stallMs) {
+        // No progress at all for stallMs
+        stallReason = `SFTP upload stalled (no bytes for ${Math.round(stallMs / 1000)}s): ${remotePath}`;
+        clearInterval(pollTimer);
+        readStream.destroy(new Error(stallReason));
+      }
+    }, POLL_MS);
 
     try {
-      await client.put(localPath, remotePath);
+      await Promise.race([
+        client.put(readStream as unknown as NodeJS.ReadableStream, remotePath),
+        new Promise<void>((resolve) => { forceResolve = resolve; }),
+      ]);
       opts.onProgress?.({
         remotePath,
         localPath,
-        bytesTransferred: total ?? 0,
+        bytesTransferred: total,
         totalBytes: total,
       });
     } catch (err) {
+      if (stallReason) {
+        throw new RemoteError('SFTP_FAILED', stallReason, {
+          retriable: true,
+          detail: { remotePath, bytesTransferred: readStream.bytesRead, totalBytes: total },
+        });
+      }
       throw classifySftpError('upload', err);
     } finally {
-      client.off?.('upload', onData);
+      clearInterval(pollTimer);
     }
   }
 

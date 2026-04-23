@@ -36,6 +36,19 @@ export class SiteMapper {
     await this.save(mappings);
   }
 
+  async delete(localSiteId: string, expected?: { serverId?: number; appId?: number }): Promise<boolean> {
+    const mappings = await this.list();
+    const next = mappings.filter((m) => {
+      if (m.localSiteId !== localSiteId) return true;
+      if (expected?.serverId !== undefined && m.serverId !== expected.serverId) return true;
+      if (expected?.appId !== undefined && m.appId !== expected.appId) return true;
+      return false;
+    });
+    if (next.length === mappings.length) return false;
+    await this.save(next);
+    return true;
+  }
+
   async list(): Promise<SiteMapping[]> {
     if (!this.mappings) {
       this.mappings = await this.load();

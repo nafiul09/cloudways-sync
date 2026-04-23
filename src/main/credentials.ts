@@ -43,6 +43,7 @@ export type CredentialStoreOptions = {
 
 const SECRET_FILE = 'credentials.bin';
 const META_FILE = 'credentials.meta.json';
+const APP_PASSWORDS_FILE = 'app-passwords.bin';
 
 export class EncryptionUnavailableError extends Error {
   constructor() {
@@ -134,5 +135,73 @@ export class CredentialStore {
       rm(this.secretPath(), { force: true }),
       rm(this.metaPath(), { force: true }),
     ]);
+  }
+}
+
+export class AppPasswordStore {
+  private readonly dir: string;
+  private readonly safeStorage: SafeStorage;
+
+  constructor(opts: CredentialStoreOptions) {
+    this.dir = opts.dir;
+    this.safeStorage = opts.safeStorage;
+  }
+
+  private filePath(): string {
+    return path.join(this.dir, APP_PASSWORDS_FILE);
+  }
+
+  private key(serverId: number, appId: number): string {
+    return `${serverId}:${appId}`;
+  }
+
+  private async readAll(): Promise<Record<string, string>> {
+    let blob: Buffer;
+    try {
+      blob = await readFile(this.filePath());
+    } catch {
+      return {};
+    }
+    if (!this.safeStorage.isEncryptionAvailable()) {
+      throw new EncryptionUnavailableError();
+    }
+    const decrypted = this.safeStorage.decryptString(blob);
+    const parsed = JSON.parse(decrypted) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const out: Record<string, string> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value === 'string') out[key] = value;
+    }
+    return out;
+  }
+
+  private async writeAll(passwords: Record<string, string>): Promise<void> {
+    if (!this.safeStorage.isEncryptionAvailable()) {
+      throw new EncryptionUnavailableError();
+    }
+    await mkdir(this.dir, { recursive: true });
+    const encrypted = this.safeStorage.encryptString(JSON.stringify(passwords));
+    await writeFile(this.filePath(), encrypted, { mode: 0o600 });
+  }
+
+  async get(serverId: number, appId: number): Promise<string | undefined> {
+    const passwords = await this.readAll();
+    return passwords[this.key(serverId, appId)];
+  }
+
+  async set(serverId: number, appId: number, password: string): Promise<void> {
+    const trimmed = password.trim();
+    const passwords = await this.readAll();
+    const key = this.key(serverId, appId);
+    if (trimmed) {
+      passwords[key] = trimmed;
+    } else {
+      delete passwords[key];
+    }
+    await this.writeAll(passwords);
+  }
+
+  async clear(): Promise<void> {
+    await rm(this.filePath(), { force: true });
   }
 }

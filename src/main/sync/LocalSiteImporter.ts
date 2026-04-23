@@ -11,7 +11,7 @@ const gunzip = promisify(zlib.gunzip);
 
 type LocalServices = Pick<
   ServiceContainerServices,
-  'addSite' | 'siteProcessManager' | 'siteDatabase' | 'importSQLFile' | 'wpCli'
+  'addSite' | 'siteData' | 'siteProcessManager' | 'siteDatabase' | 'importSQLFile' | 'wpCli'
 >;
 
 export type LocalSiteImporterOptions = {
@@ -29,28 +29,13 @@ export class LocalSiteImporter implements SiteImporter {
   }
 
   async importPulledSite(input: LocalImportInput): Promise<LocalImportResult> {
-    const slug = await uniqueSlug(toSiteSlug(input.siteName), this.sitesRoot);
-    const sitePath = path.join(this.sitesRoot, slug);
-    const siteDomain = `${slug}.local`;
     const sqlPath = input.importDatabase ? await ensureSqlDump(input.dbDumpPath) : undefined;
 
-    const site = await this.services.addSite.addSite({
-      newSiteInfo: {
-        siteName: input.siteName,
-        sitePath,
-        siteDomain,
-        multiSite: MultiSite.No,
-        environment: 'custom',
-        database: 'mysql',
-      },
-      wpCredentials: {
-        adminUsername: 'cloudwayssync',
-        adminPassword: randomPassword(),
-        adminEmail: 'cloudwayssync@example.local',
-      },
-      goToSite: false,
-      installWP: true,
-    });
+    // When existingSiteId is set, update the existing Local site instead
+    // of creating a new one.
+    const site = input.existingSiteId
+      ? await this.resolveExistingSite(input.existingSiteId)
+      : await this.createNewSite(input);
 
     await this.services.siteProcessManager.start(site);
     await this.services.siteDatabase.waitForDB(site);
@@ -61,7 +46,7 @@ export class LocalSiteImporter implements SiteImporter {
       await fs.promises.cp(input.wpContentPath, targetWpContent, { recursive: true });
     }
 
-    const localUrl = site.url || `http://${siteDomain}`;
+    const localUrl = site.url || `http://${site.domain}.local`;
 
     if (input.importDatabase && sqlPath) {
       await this.services.importSQLFile(site, sqlPath);
@@ -82,6 +67,38 @@ export class LocalSiteImporter implements SiteImporter {
       localUrl,
       webRootPath: site.paths.webRoot,
     };
+  }
+
+  private async resolveExistingSite(siteId: string) {
+    const site = this.services.siteData.getSite(siteId);
+    if (!site) {
+      throw new Error(`Local site "${siteId}" not found. It may have been deleted.`);
+    }
+    return site;
+  }
+
+  private async createNewSite(input: LocalImportInput) {
+    const slug = await uniqueSlug(toSiteSlug(input.siteName), this.sitesRoot);
+    const sitePath = path.join(this.sitesRoot, slug);
+    const siteDomain = `${slug}.local`;
+
+    return this.services.addSite.addSite({
+      newSiteInfo: {
+        siteName: input.siteName,
+        sitePath,
+        siteDomain,
+        multiSite: MultiSite.No,
+        environment: 'custom',
+        database: 'mysql',
+      },
+      wpCredentials: {
+        adminUsername: 'cloudwayssync',
+        adminPassword: randomPassword(),
+        adminEmail: 'cloudwayssync@example.local',
+      },
+      goToSite: false,
+      installWP: true,
+    });
   }
 }
 

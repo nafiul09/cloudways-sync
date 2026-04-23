@@ -5,6 +5,9 @@ export type PullPlan = {
   serverId: number;
   appId: number;
   destinationName: string;
+  serverLabel?: string;
+  /** When set, pull updates this existing Local site instead of creating a new one. */
+  localSiteId?: string;
   includes: PullIncludes;
   steps: SyncStep[];
   createdAt: string;
@@ -42,6 +45,8 @@ export type LocalImportInput = {
   importDatabase: boolean;
   /** When false, skip wp-content copy (DB-only pull). */
   importWpContent: boolean;
+  /** When set, update this existing Local site instead of creating a new one. */
+  existingSiteId?: string;
 };
 
 export type LocalImportResult = {

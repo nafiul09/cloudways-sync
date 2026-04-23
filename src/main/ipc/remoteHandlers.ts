@@ -13,16 +13,36 @@ import { CloudwaysError } from '../cloudways/errors';
 import type { ConnectionService } from '../connection/service';
 import {
   CHANNELS,
+  type CreateAppCredentialRequest,
+  type CreateAppCredentialResponse,
   type IpcResult,
   type SerializedError,
   type SmokeAppRequest,
   type SmokeAppResponse,
 } from '../../shared/ipcTypes';
-import { EncryptionUnavailableError } from '../credentials';
+import { AppPasswordStore, EncryptionUnavailableError } from '../credentials';
 import { RemoteError } from '../remote/errors';
 import { SshClient } from '../remote/SshClient';
 import { cloudwaysAppPublicPath, wpCli } from '../remote/wpCli';
 import type { AddIpcAsyncListener } from './handlers';
+
+function isShellAccessDisabled(err: unknown): boolean {
+  if (!(err instanceof RemoteError)) return false;
+  const detail = err.detail;
+  const stderr =
+    typeof detail === 'object' && detail !== null && 'stderr' in detail
+      ? String((detail as { stderr?: unknown }).stderr ?? '')
+      : '';
+  return /shell access is disabled/i.test(`${err.message}\n${stderr}`);
+}
+
+function shellAccessDisabledError(): RemoteError {
+  return new RemoteError(
+    'WPCLI_FAILED',
+    'SSH shell access is disabled on Cloudways for this app. CloudwaysSync tried to enable it through the API; wait a minute and retry, or enable SSH access in Cloudways > Application > SSH/SFTP.',
+    { retriable: true },
+  );
+}
 
 function serializeError(err: unknown): SerializedError {
   if (err instanceof RemoteError) {
@@ -51,12 +71,58 @@ async function runHandler<T>(fn: () => Promise<T>): Promise<IpcResult<T>> {
 export type RegisterRemoteOptions = {
   addIpcAsyncListener: AddIpcAsyncListener;
   connection: ConnectionService;
+  appPasswords?: AppPasswordStore;
 };
 
 export function registerRemoteHandlers({
   addIpcAsyncListener,
   connection,
+  appPasswords,
 }: RegisterRemoteOptions): void {
+  addIpcAsyncListener(CHANNELS.CREATE_APP_CREDENTIAL, (...args: unknown[]) => {
+    const payload = args[0] as CreateAppCredentialRequest | undefined;
+    return runHandler<CreateAppCredentialResponse>(async () => {
+      if (!payload || typeof payload.serverId !== 'number' || typeof payload.appId !== 'number') {
+        throw new CloudwaysError('AUTH_INVALID', 'serverId and appId are required.', { retriable: false });
+      }
+      if (!appPasswords) {
+        throw new EncryptionUnavailableError();
+      }
+
+      const client = connection.requireClient();
+      const servers = await client.listServers();
+      const server = servers.find((s) => s.id === payload.serverId);
+      if (!server) {
+        throw new CloudwaysError('OPERATION_FAILED', `Server ${payload.serverId} not found.`, {
+          retriable: false,
+        });
+      }
+      const app = server.apps.find((a) => a.id === payload.appId);
+      if (!app) {
+        throw new CloudwaysError('OPERATION_FAILED', `App ${payload.appId} not found on server.`, {
+          retriable: false,
+        });
+      }
+
+      const created = await client.createAppCredential(server.id, app.id);
+      await client.ensureAppSshAccess(server.id, app.id);
+      if (!created.password) {
+        throw new CloudwaysError('OPERATION_FAILED', 'Cloudways created app credentials without returning a password.', {
+          retriable: false,
+        });
+      }
+      await appPasswords.set(server.id, app.id, created.password);
+
+      return {
+        sftp: {
+          host: server.public_ip ?? server.server_fqdn ?? '',
+          user: created.sys_user,
+          password: created.password,
+        },
+      };
+    });
+  });
+
   addIpcAsyncListener(CHANNELS.SMOKE_APP, (...args: unknown[]) => {
     const payload = args[0] as SmokeAppRequest | undefined;
     return runHandler<SmokeAppResponse>(async () => {
@@ -83,11 +149,22 @@ export function registerRemoteHandlers({
           retriable: false,
         });
       }
-      const creds = await client.getAppCreds(server.id, app.id);
-      const primary = creds[0];
+      await client.ensureAppSshAccess(server.id, app.id);
+      let creds = await client.getAppCreds(server.id, app.id);
+      let primary = creds[0];
+
+      // Re-fetch once after enabling shell access; Cloudways may expose
+      // app passwords only after the toggle has propagated.
+      if (!primary?.password) {
+        creds = await client.getAppCreds(server.id, app.id);
+        primary = creds[0];
+      }
+
       const host = server.public_ip ?? server.server_fqdn;
       const username = primary?.sys_user ?? app.sys_user;
-      const password = primary?.password;
+      const providedPassword = payload.sftpPassword?.trim();
+      const storedPassword = appPasswords ? await appPasswords.get(server.id, app.id) : undefined;
+      const password = providedPassword || primary?.password || storedPassword;
       const appUser = app.sys_user ?? primary?.sys_user;
 
       if (!host) {
@@ -103,7 +180,7 @@ export function registerRemoteHandlers({
       if (!password) {
         throw new RemoteError(
           'SSH_AUTH_FAILED',
-          'No password available. This app may be ssh-key-only; the current smoke test needs password auth.',
+          'No SSH/SFTP password available. Enter the Cloudways application password, then try again.',
           { retriable: false },
         );
       }
@@ -120,7 +197,19 @@ export function registerRemoteHandlers({
       const started = Date.now();
       try {
         await ssh.connect();
-        const res = await wpCli({ ssh, appPublicPath }, ['option', 'get', 'home']);
+        let res;
+        try {
+          res = await wpCli({ ssh, appPublicPath }, ['option', 'get', 'home']);
+        } catch (err) {
+          if (isShellAccessDisabled(err)) {
+            await client.ensureAppSshAccess(server.id, app.id);
+            throw shellAccessDisabledError();
+          }
+          throw err;
+        }
+        if (providedPassword && appPasswords) {
+          await appPasswords.set(server.id, app.id, providedPassword);
+        }
         return {
           appPublicPath,
           home: res.stdout.trimEnd(),

@@ -10,7 +10,7 @@ import { addIpcAsyncListener, getServiceContainer, sendIPCEvent } from '@getflyw
 import type { IpcMainEvent } from 'electron';
 import { app, safeStorage } from 'electron';
 import { ConnectionService } from './connection/service';
-import { CredentialStore } from './credentials';
+import { AppPasswordStore, CredentialStore } from './credentials';
 import { registerConnectionHandlers } from './ipc/handlers';
 import { registerFleetHandlers } from './ipc/fleetHandlers';
 import { registerRemoteHandlers } from './ipc/remoteHandlers';
@@ -25,6 +25,7 @@ export default function register(context: AddonMainContext): void {
   // host app.
   const dir = path.join(app.getPath('userData'), 'cloudwayssync');
   const store = new CredentialStore({ dir, safeStorage });
+  const appPasswords = new AppPasswordStore({ dir, safeStorage });
   const connection = new ConnectionService({ store });
 
   // Fire and forget; if hydration fails (e.g. missing keychain) the
@@ -34,9 +35,9 @@ export default function register(context: AddonMainContext): void {
     console.warn('[CloudwaysSync] credential hydration failed:', err);
   });
 
-  registerConnectionHandlers({ addIpcAsyncListener, connection });
-  registerFleetHandlers({ addIpcAsyncListener, connection });
-  registerRemoteHandlers({ addIpcAsyncListener, connection });
+  registerConnectionHandlers({ addIpcAsyncListener, connection, appPasswords });
+  registerFleetHandlers({ addIpcAsyncListener, connection, appPasswords });
+  registerRemoteHandlers({ addIpcAsyncListener, connection, appPasswords });
   const services = getServiceContainer().cradle;
   registerSyncHandlers({
     addIpcAsyncListener,
@@ -44,6 +45,7 @@ export default function register(context: AddonMainContext): void {
     services,
     userDataDir: app.getPath('userData'),
     sendIPCEvent,
+    appPasswords,
   });
 
   // Legacy Phase 0 ping — kept as a cheap smoke channel.
