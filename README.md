@@ -39,29 +39,24 @@ edges. See [CHANGELOG.md](./CHANGELOG.md) for the full release notes.
 
 ## Install
 
-### From the release zip (recommended)
-
-1. Download `local-addon-cloudwayssync-0.1.0.zip` from the
-   [Releases page](https://github.com/nafiul09/cloudways-sync/releases).
-2. Unzip into Local's add-ons directory:
-   - **macOS:** `~/Library/Application Support/Local/addons/`
-   - **Windows:** `%AppData%\Local\addons\`
-   - **Linux:** `~/.config/Local/addons/`
-3. Fully quit Local (Cmd+Q / Alt+F4 — not just close the window) and
-   reopen.
-4. In Local, open any site's Tools tab and click **CloudwaysSync**,
-   or click the CloudwaysSync icon in Local's sidebar.
-5. Paste your Cloudways email + API key to connect.
-
-### From source (development)
+This alpha is developer-install only — clone, build, link into Local.
+A one-click install via the Local Add-on Library will come once the
+addon is submitted there.
 
 ```bash
+git clone https://github.com/nafiul09/cloudways-sync.git
+cd cloudways-sync
 npm install
 npm run build
-npm run link   # symlinks into Local's add-ons directory
+npm run link   # copies into Local's add-ons directory
 ```
 
-Then fully quit and reopen Local.
+Then **fully quit Local** (Cmd+Q / Alt+F4 — not just close the window)
+and reopen. In Local, open any site's Tools tab and click
+**CloudwaysSync**, or click the CloudwaysSync icon in Local's sidebar,
+and paste your Cloudways email + API key.
+
+`npm run unlink` removes it again.
 
 ## Development
 
@@ -75,13 +70,10 @@ npm run build
 # Watch mode
 npm run dev
 
-# Package a distributable zip into dist/
-npm run package
-
-# Symlink into Local's add-ons directory
+# Copy into Local's add-ons directory
 npm run link
 
-# Remove the symlink
+# Remove it again
 npm run unlink
 
 # Lint / typecheck / test
@@ -104,9 +96,8 @@ src/
 └── shared/     Types imported by both processes
 
 scripts/
-├── build-addon-zip.mjs   Package a release zip
-├── link-to-local.mjs     Symlink into Local's add-ons dir
-├── unlink-from-local.mjs Remove the symlink
+├── link-to-local.mjs     Copy into Local's add-ons dir
+├── unlink-from-local.mjs Remove it
 └── smoke-cloudways.mjs   Live Cloudways API sanity check
 ```
 

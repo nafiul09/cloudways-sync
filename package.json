@@ -36,11 +36,9 @@
     "test:watch": "vitest",
     "link": "node scripts/link-to-local.mjs",
     "unlink": "node scripts/unlink-from-local.mjs",
-    "smoke:cloudways": "node scripts/smoke-cloudways.mjs",
-    "package": "node scripts/build-addon-zip.mjs"
+    "smoke:cloudways": "node scripts/smoke-cloudways.mjs"
   },
   "dependencies": {
-    "archiver": "^7.0.1",
     "extract-zip": "^2.0.1",
     "pino": "^9.5.0",
     "ssh2": "^1.16.0",
@@ -53,7 +51,6 @@
     "@getflywheel/local": "^10.0.0",
     "@getflywheel/local-components": "^17.8.1",
     "@testing-library/react": "^16.1.0",
-    "@types/archiver": "^6.0.3",
     "@types/node": "^20.19.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
