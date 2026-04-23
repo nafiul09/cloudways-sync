@@ -8,6 +8,8 @@ import {
   CHANNELS,
   type ConnectRequest,
   type ConnectResponse,
+  type CreateAppCredentialRequest,
+  type CreateAppCredentialResponse,
   type DisconnectResponse,
   type GetAppRequest,
   type GetAppResponse,
@@ -21,6 +23,7 @@ import {
   type JobProgressEvent,
   type ListAppsRequest,
   type ListAppsResponse,
+  type ListMappingsResponse,
   type ListServersResponse,
   type ListUndoResponse,
   type MapSiteRequest,
@@ -34,6 +37,8 @@ import {
   type SerializedError,
   type SmokeAppRequest,
   type SmokeAppResponse,
+  type UnmapSiteRequest,
+  type UnmapSiteResponse,
   type UndoPushRequest,
   type UndoPushResponse,
 } from '../shared/ipcTypes';
@@ -65,6 +70,8 @@ export const ipcClient = {
   listServers: () => invoke<ListServersResponse>(CHANNELS.LIST_SERVERS, {}),
   listApps: (req: ListAppsRequest) => invoke<ListAppsResponse>(CHANNELS.LIST_APPS, req),
   getApp: (req: GetAppRequest) => invoke<GetAppResponse>(CHANNELS.GET_APP, req),
+  createAppCredential: (req: CreateAppCredentialRequest) =>
+    invoke<CreateAppCredentialResponse>(CHANNELS.CREATE_APP_CREDENTIAL, req),
   smokeApp: (req: SmokeAppRequest) => invoke<SmokeAppResponse>(CHANNELS.SMOKE_APP, req),
   planPull: (req: PlanPullRequest) => invoke<PlanPullResponse>(CHANNELS.PLAN_PULL, req),
   planPush: (req: PlanPushRequest) => invoke<PlanPushResponse>(CHANNELS.PLAN_PUSH, req),
@@ -72,8 +79,10 @@ export const ipcClient = {
   listUndo: () => invoke<ListUndoResponse>(CHANNELS.LIST_UNDO, {}),
   undoPush: (req: UndoPushRequest) => invoke<UndoPushResponse>(CHANNELS.UNDO_PUSH, req),
   mapSite: (req: MapSiteRequest) => invoke<MapSiteResponse>(CHANNELS.MAP_SITE, req),
+  unmapSite: (req: UnmapSiteRequest) => invoke<UnmapSiteResponse>(CHANNELS.UNMAP_SITE, req),
   getMapping: (req: GetMappingRequest) => invoke<GetMappingResponse>(CHANNELS.GET_MAPPING, req),
   getMappingByApp: (req: GetMappingByAppRequest) => invoke<GetMappingByAppResponse>(CHANNELS.GET_MAPPING_BY_APP, req),
+  listMappings: () => invoke<ListMappingsResponse>(CHANNELS.LIST_MAPPINGS, {}),
 };
 
 // --- Streaming job events ----------------------------------------------

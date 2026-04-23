@@ -16,6 +16,7 @@ import {
 } from '../remote/wpCli';
 import type { JobProgressEvent, RunJobResponse, UndoRecord } from '../../shared/ipcTypes';
 import { shouldSkipPushStep, tarExcludePatternsForIncludes } from './Selective';
+import { sweepStaleJobs } from './cleanup';
 import type { PullMetadata, PushPlan } from './types';
 import type { UndoLedger } from './UndoLedger';
 
@@ -23,14 +24,20 @@ const execFileAsync = promisify(execFile);
 
 export type ExecLocalFn = (cmd: string, args: string[], opts?: { timeout?: number }) => Promise<{ stdout: string; stderr: string }>;
 
+/** Dump a Local site's database to the given path using Local's bundled MySQL. */
+export type LocalDbDumpFn = (localSiteId: string, destination: string) => Promise<string>;
+
 export type PushOrchestratorOptions = {
   client: ApiClient;
   undoLedger: UndoLedger;
   userDataDir: string;
   sshFactory?: (config: SshConnectConfig) => SshClient;
   sftpFactory?: (config: SftpConnectConfig) => SftpClient;
-  /** Override for local shell commands (wp, tar, gzip). Defaults to execFile. */
+  /** Override for local shell commands (tar, gzip). Defaults to execFile. */
   execLocal?: ExecLocalFn;
+  /** Dump a Local site's DB via Local's SiteDatabase service. */
+  localDbDump?: LocalDbDumpFn;
+  getAppPassword?: (serverId: number, appId: number) => Promise<string | undefined>;
   emitProgress?: (event: JobProgressEvent) => void;
   isCancelled?: (jobId: string) => boolean;
 };
@@ -46,6 +53,8 @@ export class PushOrchestrator {
   private readonly sshFactory: (config: SshConnectConfig) => SshClient;
   private readonly sftpFactory: (config: SftpConnectConfig) => SftpClient;
   private readonly execLocal: ExecLocalFn;
+  private readonly localDbDump?: LocalDbDumpFn;
+  private readonly getAppPassword?: (serverId: number, appId: number) => Promise<string | undefined>;
   private readonly emitProgress?: (event: JobProgressEvent) => void;
   private readonly isCancelled?: (jobId: string) => boolean;
 
@@ -56,6 +65,8 @@ export class PushOrchestrator {
     this.sshFactory = opts.sshFactory ?? ((config) => new SshClient(config));
     this.sftpFactory = opts.sftpFactory ?? ((config) => new SftpClient(config));
     this.execLocal = opts.execLocal ?? defaultExecLocal;
+    this.localDbDump = opts.localDbDump;
+    this.getAppPassword = opts.getAppPassword;
     this.emitProgress = opts.emitProgress;
     this.isCancelled = opts.isCancelled;
   }
@@ -139,12 +150,17 @@ export class PushOrchestrator {
         await this.step(jobId, 'local-export-db', async () => {
           this.progress(jobId, 'local-export-db', 'running', 'Exporting local database…');
           const localSql = path.join(stagingDir, `cws-${jobId}.sql`);
-          // Use wp-cli locally via the Local site's webroot
-          await this.execLocal('wp', [
-            'db', 'export', localSql,
-            '--add-drop-table',
-            `--path=${plan.webRootPath}`,
-          ], { timeout: 10 * 60 * 1000 });
+          if (this.localDbDump && plan.localSiteId) {
+            // Use Local's SiteDatabase.dump which handles the site's MySQL socket/port
+            await this.localDbDump(plan.localSiteId, localSql);
+          } else {
+            // Fallback: bare wp-cli (requires php on PATH)
+            await this.execLocal('wp', [
+              'db', 'export', localSql,
+              '--add-drop-table',
+              `--path=${plan.webRootPath}`,
+            ], { timeout: 10 * 60 * 1000 });
+          }
           // Gzip locally
           await this.execLocal('gzip', ['-f', localSql], { timeout: 5 * 60 * 1000 });
         });
@@ -271,6 +287,10 @@ export class PushOrchestrator {
     } finally {
       await sftp?.end();
       await ssh?.end();
+      // Clean up local staging — no reason to keep exported archives
+      await fs.promises.rm(jobDir, { recursive: true, force: true }).catch(() => undefined);
+      // Sweep stale job dirs left by previous runs that didn't clean up
+      await sweepStaleJobs(this.userDataDir).catch(() => undefined);
     }
   }
 
@@ -287,27 +307,38 @@ export class PushOrchestrator {
     if (!app) {
       throw new RemoteError('SSH_COMMAND_FAILED', `App ${appId} not found on server.`, { retriable: false });
     }
-    const creds = await this.client.getAppCreds(server.id, app.id);
-    const primary = creds[0];
+    await this.client.ensureAppSshAccess(server.id, app.id);
+    let creds = await this.client.getAppCreds(server.id, app.id);
+    let primary = creds[0];
+
+    // Re-fetch once after enabling shell access; Cloudways may expose
+    // app passwords only after the toggle has propagated.
+    if (!primary?.password) {
+      creds = await this.client.getAppCreds(server.id, app.id);
+      primary = creds[0];
+    }
+
     const host = server.public_ip ?? server.server_fqdn;
     const username = primary?.sys_user ?? app.sys_user;
+    const storedPassword = this.getAppPassword ? await this.getAppPassword(server.id, app.id) : undefined;
+    const password = primary?.password || storedPassword;
     if (!host) {
       throw new RemoteError('SSH_NETWORK', 'Cloudways did not return a server address.', { retriable: false });
     }
     if (!username) {
       throw new RemoteError('SSH_AUTH_FAILED', 'No SSH user available for this app.', { retriable: false });
     }
-    if (!primary?.password) {
+    if (!password) {
       throw new RemoteError(
         'SSH_AUTH_FAILED',
-        'No password available. This app may be ssh-key-only; password auth cannot continue yet.',
+        'No SSH/SFTP password available. Enter the Cloudways application password in the link step, then try again.',
         { retriable: false },
       );
     }
     return {
       server,
       app,
-      auth: { host, username, password: primary.password },
+      auth: { host, username, password },
     };
   }
 

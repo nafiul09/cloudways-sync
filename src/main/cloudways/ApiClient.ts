@@ -11,6 +11,7 @@
 // job of `credentials.ts` (Phase 2).
 
 import { request, type Dispatcher } from 'undici';
+import { randomBytes } from 'node:crypto';
 import { z, type ZodTypeAny } from 'zod';
 import {
   AuthExpired,
@@ -27,6 +28,7 @@ import {
 import {
   AppCredsResponseSchema,
   BackupTriggerResponseSchema,
+  CreateAppCredsResponseSchema,
   isSuccessfulOperation,
   isTerminalOperation,
   OAuthTokenSchema,
@@ -81,6 +83,8 @@ export const CLOUDWAYS_API_ENDPOINTS = {
   oauthAccessToken: '/oauth/access_token',
   listServers: '/server',
   appCredentials: '/app/creds',
+  appSshPerms: '/app/getAppSshPerms',
+  updateAppSshPerms: '/app/updateAppSshPerms',
   appBackup: '/app/manage/takeBackup',
   serverBackup: '/server/manage/takeBackup',
   operation: '/operation',
@@ -97,6 +101,69 @@ const DEFAULT_MAX_DELAY_MS = 20_000;
 const DEFAULT_REFRESH_SKEW_MS = 5 * 60 * 1000;
 
 const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+function generatedAppCredential(): { username: string; password: string } {
+  const suffix = randomBytes(4).toString('hex');
+  const password = [
+    randomBytes(9).toString('base64url'),
+    'A7',
+    randomBytes(4).toString('hex'),
+    'z!',
+  ].join('');
+  return { username: `cwsync_${suffix}`, password };
+}
+
+const TRUTHY_API_VALUES = new Set(['1', 'true', 'enable', 'enabled', 'on', 'yes']);
+const FALSY_API_VALUES = new Set(['0', 'false', 'disable', 'disabled', 'off', 'no']);
+
+function coerceApiBoolean(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') {
+    if (value === 1) return true;
+    if (value === 0) return false;
+  }
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (TRUTHY_API_VALUES.has(normalized)) return true;
+    if (FALSY_API_VALUES.has(normalized)) return false;
+  }
+  return undefined;
+}
+
+function findSshAccessFlag(value: unknown, depth = 0): boolean | undefined {
+  if (!value || depth > 5) return undefined;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const flag = findSshAccessFlag(item, depth + 1);
+      if (flag !== undefined) return flag;
+    }
+    return undefined;
+  }
+  if (typeof value !== 'object') return undefined;
+
+  // Match keys that relate to SSH/shell permissions. Exclude generic
+  // keys like bare "status" or "access" that cause false positives.
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    const k = key.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const hasSshOrShell = k.includes('ssh') || k.includes('shell');
+    const isSshKey = hasSshOrShell && (
+      k.includes('access') ||
+      k.includes('perm') ||
+      k.includes('enabled') ||
+      k.includes('status') ||
+      k === 'ssh' ||
+      k === 'shell'
+    );
+    const flag = coerceApiBoolean(child);
+    if (isSshKey && flag !== undefined) return flag;
+  }
+
+  for (const child of Object.values(value as Record<string, unknown>)) {
+    const flag = findSshAccessFlag(child, depth + 1);
+    if (flag !== undefined) return flag;
+  }
+  return undefined;
+}
 
 export class ApiClient {
   private readonly email: string;
@@ -153,6 +220,40 @@ export class ApiClient {
       schema: AppCredsResponseSchema,
     });
     return res.app_creds;
+  }
+
+  async createAppCredential(serverId: number, appId: number): Promise<AppCredential> {
+    const generated = generatedAppCredential();
+    const create = async (fields: { userField: string; passwordField: string }) => {
+      const res = await this.call({
+        method: 'POST',
+        path: CLOUDWAYS_API_ENDPOINTS.appCredentials,
+        form: {
+          server_id: serverId,
+          app_id: appId,
+          [fields.userField]: generated.username,
+          [fields.passwordField]: generated.password,
+        },
+        schema: CreateAppCredsResponseSchema,
+      });
+      const record = res.app_creds?.[0] ?? res.app_cred ?? res.credential ?? {
+        id: res.id ?? Date.now(),
+        sys_user: res.sys_user ?? res.username ?? generated.username,
+        password: res.password ?? res.sys_password ?? generated.password,
+      };
+      return {
+        ...record,
+        sys_user: record.sys_user || generated.username,
+        password: record.password || generated.password,
+      };
+    };
+
+    try {
+      return await create({ userField: 'username', passwordField: 'password' });
+    } catch (err) {
+      if (!(err instanceof CloudwaysError) || err.code !== 'HTTP_4XX') throw err;
+      return create({ userField: 'sys_user', passwordField: 'sys_password' });
+    }
   }
 
   /**
@@ -259,6 +360,55 @@ export class ApiClient {
       schema: OperationTriggerResponseSchema,
     });
     return res.operation_id;
+  }
+
+  /** Check whether SSH access is enabled for an app. */
+  async getAppSshAccess(serverId: number, appId: number): Promise<boolean> {
+    const res = await this.call({
+      method: 'GET',
+      path: CLOUDWAYS_API_ENDPOINTS.appSshPerms,
+      query: { server_id: serverId, app_id: appId },
+      schema: z.unknown(),
+    });
+    return findSshAccessFlag(res) ?? false;
+  }
+
+  /** Enable SSH access for an app via the Cloudways API. */
+  async enableAppSsh(serverId: number, appId: number): Promise<void> {
+    await this.call({
+      method: 'POST',
+      path: CLOUDWAYS_API_ENDPOINTS.updateAppSshPerms,
+      form: { server_id: serverId, app_id: appId, update_perms_action: 'enable' },
+      schema: z.unknown(),
+    });
+  }
+
+  /** Ensure SSH access is enabled for an app. Checks current status and
+   * enables if needed. Waits briefly for the change to propagate. */
+  async ensureAppSshAccess(serverId: number, appId: number): Promise<void> {
+    let enabled = false;
+    try {
+      enabled = await this.getAppSshAccess(serverId, appId);
+    } catch {
+      // If the status check fails (e.g. endpoint not available in v2),
+      // try enabling anyway — worst case it's a no-op.
+    }
+
+    if (!enabled) {
+      await this.enableAppSsh(serverId, appId);
+      await this.sleep(5_000);
+      return;
+    }
+
+    try {
+      await this.enableAppSsh(serverId, appId);
+    } catch {
+      // Some accounts respond with an error when the toggle is already on.
+      // The status check said enabled, so keep going and let the SSH command
+      // surface any real platform-side problem.
+    }
+    // Brief wait for the SSH toggle to propagate on the Cloudways side.
+    await this.sleep(3_000);
   }
 
   /** Whitelist an IP for SSH/SFTP on a server. */

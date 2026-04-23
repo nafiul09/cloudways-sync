@@ -86,12 +86,21 @@ export const Http5xx = (status: number, body?: unknown) =>
     detail: body,
   });
 
-export const Http4xx = (status: number, body?: unknown) =>
-  new CloudwaysError('HTTP_4XX', `Cloudways returned ${status}.`, {
+export const Http4xx = (status: number, body?: unknown) => {
+  let hint = '';
+  if (body && typeof body === 'object') {
+    const b = body as Record<string, unknown>;
+    const msg = b.error_msg ?? b.message ?? b.error ?? b.error_description;
+    if (typeof msg === 'string' && msg.trim()) hint = ` — ${msg.trim()}`;
+  } else if (typeof body === 'string' && body.trim()) {
+    hint = ` — ${body.trim().slice(0, 200)}`;
+  }
+  return new CloudwaysError('HTTP_4XX', `Cloudways returned ${status}${hint}`, {
     retriable: false,
     status,
     detail: body,
   });
+};
 
 export const OperationFailed = (operationId: number, message: string, detail?: unknown) =>
   new CloudwaysError('OPERATION_FAILED', `Operation ${operationId} failed: ${message}`, {

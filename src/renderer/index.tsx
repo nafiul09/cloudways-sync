@@ -11,6 +11,8 @@ import { registerHooks } from './hooks';
 import { injectNavItem } from './sidebar/injectNavItem';
 import { mountOverlay } from './sidebar/OverlayRoot';
 import { CLOUDWAYSSYNC_ICON_SVG } from './sidebar/icon';
+import { startSiteListIcons } from './sidebar/injectSiteListIcons';
+import { mountSyncModal } from './SyncModal';
 import { GlobalDashboard } from './screens/GlobalDashboard';
 
 export default function register(context: AddonRendererContext): void {
@@ -41,4 +43,15 @@ export default function register(context: AddonRendererContext): void {
     // eslint-disable-next-line no-console
     console.warn('[CloudwaysSync] sidebar injection failed — using Preferences entry only.', err);
   }
+
+  // Show Cloudways badge on linked sites in the site list.
+  try {
+    startSiteListIcons();
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[CloudwaysSync] site list icon injection failed.', err);
+  }
+
+  // Global sync progress modal — persists across navigation.
+  mountSyncModal();
 }

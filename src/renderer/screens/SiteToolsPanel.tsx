@@ -3,6 +3,7 @@ import {
   Banner,
   Button,
   Checkbox,
+  FlySelect,
   Spinner,
   Text,
   TextButton,
@@ -10,14 +11,18 @@ import {
 } from '@getflywheel/local-components';
 import type { Site } from '@getflywheel/local';
 import { ipcClient, IpcCallError, subscribeJobProgress } from '../ipcClient';
+import { refreshSiteListIcons } from '../sidebar/injectSiteListIcons';
+import { showSyncModal, failSyncModal } from '../SyncModal';
 import type {
+  AppDetail,
   AppSummary,
   ConnectionStatusPayload,
   JobProgressEvent,
+  PullIncludes,
   PushIncludes,
   ServerSummary,
   SiteMapping,
-  UndoRecord,
+  SmokeAppResponse,
 } from '../../shared/ipcTypes';
 
 const PUSH_STEP_LABELS: Record<string, string> = {
@@ -34,10 +39,173 @@ const PUSH_STEP_LABELS: Record<string, string> = {
   cleanup: 'Cleaning up',
 };
 
+const PULL_STEP_LABELS: Record<string, string> = {
+  validate: 'Validating',
+  backup: 'Taking Cloudways backup',
+  ssh: 'Connecting over SSH',
+  metadata: 'Reading WordPress metadata',
+  'db-export': 'Exporting remote DB',
+  'download-db': 'Downloading DB dump',
+  'download-content': 'Downloading wp-content',
+  'local-site': 'Importing into Local',
+  'local-content': 'Installing wp-content',
+  'local-db': 'Importing DB into Local',
+  'search-replace': 'Rewriting URLs',
+  manifest: 'Writing manifest',
+};
+
+const CWS_CSS = `
+  @keyframes cws-spin {
+    to { transform: rotate(360deg); }
+  }
+  .cws-spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(255,255,255,0.15);
+    border-top-color: rgba(255,255,255,0.6);
+    border-radius: 50%;
+    animation: cws-spin 0.7s linear infinite;
+    flex-shrink: 0;
+  }
+`;
+
+const LOCAL_FLY_SELECT_CSS = `
+  .cws-local-select.FlySelect {
+    box-sizing: border-box;
+    display: inline-block;
+    height: 30px;
+    min-width: 146px;
+    max-width: 100%;
+    padding: 0 35px 0 10px;
+    position: relative;
+    color: #d9d9d9;
+    background: #252626;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 300;
+    line-height: 30px;
+    user-select: none;
+    vertical-align: middle;
+  }
+
+  .cws-local-select.FlySelect[disabled] {
+    cursor: default;
+    filter: grayscale(100%);
+    opacity: 0.58;
+    pointer-events: none;
+  }
+
+  .cws-local-select.FlySelect:not(.FlySelect__Open).FlySelect__Focus,
+  .cws-local-select.FlySelect:not(.FlySelect__Open):focus {
+    outline: none;
+    box-shadow: 0 0 0 2px #51bb7b;
+  }
+
+  .cws-local-select.FlySelect.FlySelect__Open {
+    z-index: 10000;
+  }
+
+  .cws-local-select.FlySelect > svg {
+    position: absolute;
+    right: 9px;
+    top: 50%;
+    width: 14px;
+    height: 6px;
+    margin: -3px 0 0;
+  }
+
+  .cws-local-select.FlySelect svg path {
+    fill: #51bb7b;
+  }
+
+  .cws-local-select.FlySelect:hover > svg path {
+    fill: #74d79a;
+  }
+
+  .cws-local-select .CurrentValue,
+  .cws-local-select .FlySelect_Option {
+    display: flex;
+    align-items: center;
+    height: 30px;
+    cursor: pointer;
+    line-height: 30px;
+  }
+
+  .cws-local-select .CurrentValue * {
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .cws-local-select .CurrentValue_Placeholder {
+    color: rgba(217, 217, 217, 0.65);
+  }
+
+  .cws-local-select .FlySelect__Right {
+    display: flex;
+    align-items: center;
+    margin-left: auto;
+  }
+
+  .cws-local-select .FlySelect_Options {
+    display: none;
+    width: auto;
+    position: fixed;
+    background: #2b2c2c;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 4px;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+    overflow: hidden;
+  }
+
+  .cws-local-select.FlySelect__Open .FlySelect_Options {
+    display: block;
+  }
+
+  .cws-local-select .FlySelect_OptionsContainer {
+    max-height: inherit;
+    overflow: auto;
+  }
+
+  .cws-local-select .FlySelect_Option {
+    box-sizing: border-box;
+    min-width: 100%;
+    padding: 0 10px;
+    color: #d9d9d9;
+  }
+
+  .cws-local-select .FlySelect_Option:hover,
+  .cws-local-select .FlySelect_Option:focus {
+    color: #fff;
+    background: #2f8f55;
+    outline: none;
+  }
+
+  .cws-local-select .FlySelect_Option:hover span,
+  .cws-local-select .FlySelect_Option:focus span,
+  .cws-local-select .FlySelect_Option:hover svg path,
+  .cws-local-select .FlySelect_Option:focus svg path {
+    color: #fff;
+    fill: #fff;
+  }
+
+  .cws-local-select .FlySelect__Check {
+    width: 12px;
+    height: 10px;
+    margin-left: 10px;
+  }
+`;
+
 export function SiteToolsPanel({ site }: { site: Site }): React.ReactElement {
   const [status, setStatus] = useState<ConnectionStatusPayload | undefined>();
   const [loadError, setLoadError] = useState<string | undefined>();
   const [mapping, setMapping] = useState<SiteMapping | null | undefined>(undefined);
+  const [unlinkError, setUnlinkError] = useState<string | undefined>();
 
   useEffect(() => {
     let cancelled = false;
@@ -54,7 +222,28 @@ export function SiteToolsPanel({ site }: { site: Site }): React.ReactElement {
     void (async () => {
       try {
         const res = await ipcClient.getMapping({ localSiteId: site.id });
-        if (!cancelled) setMapping(res.mapping);
+        if (cancelled) return;
+        const m = res.mapping;
+        // Backfill serverLabel for mappings created before that field existed.
+        if (m && !m.serverLabel) {
+          try {
+            const servers = await ipcClient.listServers();
+            const server = servers.servers.find((s) => s.id === m.serverId);
+            if (server) {
+              m.serverLabel = server.label;
+              // Persist so we don't need to fetch again.
+              ipcClient.mapSite({
+                localSiteId: m.localSiteId,
+                serverId: m.serverId,
+                appId: m.appId,
+                appLabel: m.appLabel,
+                serverLabel: server.label,
+                remoteUrl: m.remoteUrl,
+              }).catch(() => { /* non-fatal */ });
+            }
+          } catch { /* non-fatal */ }
+        }
+        if (!cancelled) setMapping(m);
       } catch {
         if (!cancelled) setMapping(null);
       }
@@ -66,6 +255,7 @@ export function SiteToolsPanel({ site }: { site: Site }): React.ReactElement {
 
   return (
     <div style={styles.wrap}>
+      <style>{CWS_CSS}{LOCAL_FLY_SELECT_CSS}</style>
       <header style={styles.header}>
         <Title size="l" tag="h1">
           CloudwaysSync
@@ -79,17 +269,34 @@ export function SiteToolsPanel({ site }: { site: Site }): React.ReactElement {
         <div style={styles.center}><Spinner /></div>
       ) : status.connected ? (
         mapping ? (
-          <LinkedState
-            site={site}
-            email={status.email}
-            mapping={mapping}
-            onUnlink={() => setMapping(null)}
-          />
+          <>
+            {unlinkError && <div style={styles.banner}><Banner variant="error">{unlinkError}</Banner></div>}
+            <LinkedState
+              site={site}
+              email={status.email}
+              mapping={mapping}
+              onUnlink={() => {
+                const previous = mapping;
+                setUnlinkError(undefined);
+                setMapping(null);
+                ipcClient.unmapSite({
+                  localSiteId: site.id,
+                  serverId: previous.serverId,
+                  appId: previous.appId,
+                }).then(() => {
+                  refreshSiteListIcons();
+                }).catch((err) => {
+                  setMapping(previous);
+                  setUnlinkError(err instanceof IpcCallError ? err.message : String(err));
+                });
+              }}
+            />
+          </>
         ) : (
           <UnlinkedState
             site={site}
             email={status.email}
-            onLinked={(m) => setMapping(m)}
+            onLinked={(m) => { setMapping(m); refreshSiteListIcons(); }}
           />
         )
       ) : (
@@ -99,7 +306,19 @@ export function SiteToolsPanel({ site }: { site: Site }): React.ReactElement {
   );
 }
 
-// --- Connected + Mapped: Push controls ---
+// --- Connected + Mapped: Push & Pull controls ---
+
+type SyncStep = { stepId: string; percent?: number; detail?: string };
+
+const DEFAULT_INCLUDES = {
+  database: true,
+  wpContent: true,
+  uploads: true,
+  plugins: true,
+  themes: true,
+  muPlugins: true,
+  languages: true,
+};
 
 function LinkedState({
   site,
@@ -112,60 +331,82 @@ function LinkedState({
   mapping: SiteMapping;
   onUnlink: () => void;
 }): React.ReactElement {
+  const [mode, setMode] = useState<'push' | 'pull'>('push');
+
+  // --- Push state ---
   const [pushBusy, setPushBusy] = useState(false);
   const [pushResult, setPushResult] = useState<string | undefined>();
   const [pushErr, setPushErr] = useState<string | undefined>();
-  const [pushStep, setPushStep] = useState<
-    { stepId: string; percent?: number; detail?: string } | undefined
-  >();
-  const [includes, setIncludes] = useState<PushIncludes>({
-    database: true,
-    wpContent: true,
-    uploads: true,
-    plugins: true,
-    themes: true,
-    muPlugins: true,
-    languages: true,
-  });
+  const [pushStep, setPushStep] = useState<SyncStep | undefined>();
+  const [pushIncludes, setPushIncludes] = useState<PushIncludes>({ ...DEFAULT_INCLUDES });
   const [lastPushUndoId, setLastPushUndoId] = useState<string | undefined>();
   const [undoBusy, setUndoBusy] = useState(false);
   const [undoResult, setUndoResult] = useState<string | undefined>();
   const [undoErr, setUndoErr] = useState<string | undefined>();
 
+  // --- Pull state ---
+  const [pullBusy, setPullBusy] = useState(false);
+  const [pullResult, setPullResult] = useState<string | undefined>();
+  const [pullErr, setPullErr] = useState<string | undefined>();
+  const [pullStep, setPullStep] = useState<SyncStep | undefined>();
+  const [pullIncludes, setPullIncludes] = useState<PullIncludes>({ ...DEFAULT_INCLUDES });
+  const [appDetail, setAppDetail] = useState<AppDetail | undefined>();
+  const [credentialBusy, setCredentialBusy] = useState(false);
+  const [credentialError, setCredentialError] = useState<string | undefined>();
+
+  const busy = pushBusy || pullBusy || credentialBusy;
+  const canSync = Boolean(appDetail?.sftp.password);
+
+  useEffect(() => {
+    let cancelled = false;
+    setAppDetail(undefined);
+    setCredentialError(undefined);
+    ipcClient.getApp({ serverId: mapping.serverId, appId: mapping.appId })
+      .then((res) => { if (!cancelled) setAppDetail(res.app); })
+      .catch((e) => { if (!cancelled) setCredentialError(e instanceof Error ? e.message : String(e)); });
+    return () => { cancelled = true; };
+  }, [mapping.serverId, mapping.appId]);
+
+  // Subscribe to job progress for whichever operation is running.
   useEffect(() => {
     const unsubscribe = subscribeJobProgress((event: JobProgressEvent) => {
-      if (!pushBusy) return;
+      if (!pushBusy && !pullBusy) return;
       const percent =
         typeof event.totalBytes === 'number' &&
         event.totalBytes > 0 &&
         typeof event.bytesTransferred === 'number'
           ? Math.min(100, Math.round((event.bytesTransferred / event.totalBytes) * 100))
           : undefined;
+      const step: SyncStep = { stepId: event.stepId, percent, detail: event.detail };
       if (event.status === 'running') {
-        setPushStep({ stepId: event.stepId, percent, detail: event.detail });
+        if (pushBusy) setPushStep(step);
+        if (pullBusy) setPullStep(step);
       } else if (event.status === 'success' || event.status === 'failed') {
         setPushStep(undefined);
+        setPullStep(undefined);
       }
     });
     return unsubscribe;
-  }, [pushBusy]);
+  }, [pushBusy, pullBusy]);
 
+  // --- Push handler ---
   const runPush = async () => {
     setPushBusy(true);
     setPushResult(undefined);
     setPushErr(undefined);
     setPushStep(undefined);
     setLastPushUndoId(undefined);
+    showSyncModal('push', mapping.appLabel);
     try {
       const plan = await ipcClient.planPush({
         serverId: mapping.serverId,
         appId: mapping.appId,
         localSiteId: site.id,
         localUrl: site.url || `http://${site.domain}`,
-        webRootPath: site.paths.webRoot,
-        includes,
+        webRootPath: site.paths?.webRoot || `${site.path}/app/public`,
+        includes: pushIncludes,
       });
-      const job = await ipcClient.runJob({ planId: plan.planId });
+      await ipcClient.runJob({ planId: plan.planId });
       setPushResult('Push completed successfully.');
       try {
         const undos = await ipcClient.listUndo();
@@ -175,7 +416,9 @@ function LinkedState({
         if (latest) setLastPushUndoId(latest.id);
       } catch { /* non-fatal */ }
     } catch (e) {
-      setPushErr(e instanceof Error ? e.message : String(e));
+      const msg = e instanceof Error ? e.message : String(e);
+      setPushErr(msg);
+      failSyncModal(msg);
     } finally {
       setPushBusy(false);
       setPushStep(undefined);
@@ -198,13 +441,66 @@ function LinkedState({
     }
   };
 
+  // --- Pull handler ---
+  const runPull = async () => {
+    setPullBusy(true);
+    setPullResult(undefined);
+    setPullErr(undefined);
+    setPullStep(undefined);
+    showSyncModal('pull', mapping.appLabel);
+    try {
+      const plan = await ipcClient.planPull({
+        serverId: mapping.serverId,
+        appId: mapping.appId,
+        destinationName: mapping.appLabel,
+        serverLabel: mapping.serverLabel,
+        localSiteId: site.id,
+        includes: pullIncludes,
+      });
+      await ipcClient.runJob({ planId: plan.planId });
+      setPullResult('Pull completed — site updated from Cloudways.');
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setPullErr(msg);
+      failSyncModal(msg);
+    } finally {
+      setPullBusy(false);
+      setPullStep(undefined);
+    }
+  };
+
+  const createCredentials = async () => {
+    setCredentialBusy(true);
+    setCredentialError(undefined);
+    try {
+      const res = await ipcClient.createAppCredential({ serverId: mapping.serverId, appId: mapping.appId });
+      setAppDetail((prev) => prev
+        ? { ...prev, sftp: res.sftp, db: { ...prev.db, password: res.sftp.password } }
+        : prev);
+    } catch (e) {
+      setCredentialError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCredentialBusy(false);
+    }
+  };
+
+  // --- Labels ---
   const pushLabel = (() => {
     if (!pushBusy) return 'Push to Cloudways';
-    if (!pushStep) return 'Pushing\u2026';
+    if (!pushStep) return 'Pushing…';
     const label = PUSH_STEP_LABELS[pushStep.stepId] ?? pushStep.stepId;
     return pushStep.percent != null
-      ? `Pushing \u2014 ${label} (${pushStep.percent}%)`
-      : `Pushing \u2014 ${label}`;
+      ? `Pushing — ${label} (${pushStep.percent}%)`
+      : `Pushing — ${label}`;
+  })();
+
+  const pullLabel = (() => {
+    if (!pullBusy) return 'Pull from Cloudways';
+    if (!pullStep) return 'Pulling…';
+    const label = PULL_STEP_LABELS[pullStep.stepId] ?? pullStep.stepId;
+    return pullStep.percent != null
+      ? `Pulling — ${label} (${pullStep.percent}%)`
+      : `Pulling — ${label}`;
   })();
 
   return (
@@ -214,43 +510,124 @@ function LinkedState({
       </Banner>
 
       <div style={styles.linkedInfo}>
-        <Text style={{ fontWeight: 600 }}>
-          Linked to: {mapping.appLabel}
-        </Text>
-        <Text size="caption" style={{ opacity: 0.6 }}>
-          Server {mapping.serverId} &middot; App {mapping.appId}
-        </Text>
+        <div style={styles.linkedHeader}>
+          <Text style={styles.linkedHeading}>Linked Cloudways App</Text>
+          <TextButton onClick={onUnlink} style={styles.unlinkBtn}>Unlink</TextButton>
+        </div>
+        <div style={styles.linkedGrid}>
+          <Text size="caption" style={styles.linkedLabel}>App</Text>
+          <Text style={styles.linkedValue}>{mapping.appLabel}</Text>
+          <Text size="caption" style={styles.linkedLabel}>Server</Text>
+          <Text style={styles.linkedValue}>{mapping.serverLabel ?? `ID ${mapping.serverId}`}</Text>
+          {mapping.remoteUrl ? (
+            <>
+              <Text size="caption" style={styles.linkedLabel}>URL</Text>
+              <a
+                href={mapping.remoteUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ ...styles.linkedValue, color: '#51bb7b', textDecoration: 'none' }}
+                onClick={(e) => {
+                  e.preventDefault();
+                  try {
+                    // eslint-disable-next-line @typescript-eslint/no-var-requires, global-require
+                    const { shell } = require('electron') as { shell: { openExternal: (url: string) => void } };
+                    shell.openExternal(mapping.remoteUrl);
+                  } catch {
+                    window.open(mapping.remoteUrl, '_blank');
+                  }
+                }}
+              >
+                {mapping.remoteUrl}
+              </a>
+            </>
+          ) : null}
+        </div>
       </div>
 
-      <div style={styles.actionBar}>
-        <Button onClick={runPush} disabled={pushBusy}>
-          {pushLabel}
-        </Button>
-        {lastPushUndoId && !pushBusy && (
-          <Button onClick={runUndo} disabled={undoBusy} style={{ marginLeft: 8 }}>
-            {undoBusy ? 'Restoring\u2026' : 'Undo last push'}
+      {appDetail && !appDetail.sftp.password && (
+        <div style={styles.credentialsNotice}>
+          <div>
+            <Text style={styles.credentialsTitle}>SSH/SFTP access is missing for this app</Text>
+            <Text size="caption" style={styles.credentialsCopy}>
+              Create app-level credentials and enable SSH shell access before testing, pulling, or pushing this WordPress site.
+            </Text>
+          </div>
+          <Button onClick={createCredentials} disabled={busy}>
+            {credentialBusy ? 'Creating…' : 'Create SSH/SFTP + shell access'}
           </Button>
-        )}
-      </div>
-
-      {pushBusy && pushStep?.detail && (
-        <div style={{ marginBottom: 8, fontSize: 11, opacity: 0.65 }}>
-          {pushStep.detail}
+          {credentialError && (
+            <div style={styles.credentialsError}>
+              <Banner variant="error">{credentialError}</Banner>
+            </div>
+          )}
         </div>
       )}
 
-      {!pushBusy && (
-        <SelectivePanel includes={includes} onChange={setIncludes} />
-      )}
-
-      {pushErr && <div style={styles.banner}><Banner variant="error">{pushErr}</Banner></div>}
-      {pushResult && <div style={styles.banner}><Banner variant="success">{pushResult}</Banner></div>}
-      {undoErr && <div style={styles.banner}><Banner variant="error">{undoErr}</Banner></div>}
-      {undoResult && <div style={styles.banner}><Banner variant="success">{undoResult}</Banner></div>}
-
-      <div style={styles.row}>
-        <TextButton onClick={onUnlink}>Unlink this app</TextButton>
+      {/* Push / Pull tab switcher */}
+      <div style={styles.tabs}>
+        <button
+          type="button"
+          style={mode === 'push' ? styles.tabActive : styles.tab}
+          onClick={() => setMode('push')}
+          disabled={busy}
+        >
+          Push
+        </button>
+        <button
+          type="button"
+          style={mode === 'pull' ? styles.tabActive : styles.tab}
+          onClick={() => setMode('pull')}
+          disabled={busy}
+        >
+          Pull
+        </button>
       </div>
+
+      {mode === 'push' ? (
+        <>
+          <div style={styles.actionBar}>
+            <Button onClick={runPush} disabled={busy || !canSync}>
+              {pushLabel}
+            </Button>
+            {lastPushUndoId && !pushBusy && (
+              <Button onClick={runUndo} disabled={undoBusy} style={{ marginLeft: 8 }}>
+                {undoBusy ? 'Restoring…' : 'Undo last push'}
+              </Button>
+            )}
+          </div>
+          {pushBusy && pushStep?.detail && (
+            <div style={{ marginBottom: 8, fontSize: 11, opacity: 0.65 }}>
+              {pushStep.detail}
+            </div>
+          )}
+          {!pushBusy && (
+            <SelectivePanel heading="Include in push" includes={pushIncludes} onChange={setPushIncludes} />
+          )}
+          {pushErr && <div style={styles.banner}><Banner variant="error">{pushErr}</Banner></div>}
+          {pushResult && <div style={styles.banner}><Banner variant="success">{pushResult}</Banner></div>}
+          {undoErr && <div style={styles.banner}><Banner variant="error">{undoErr}</Banner></div>}
+          {undoResult && <div style={styles.banner}><Banner variant="success">{undoResult}</Banner></div>}
+        </>
+      ) : (
+        <>
+          <div style={styles.actionBar}>
+            <Button onClick={runPull} disabled={busy || !canSync}>
+              {pullLabel}
+            </Button>
+          </div>
+          {pullBusy && pullStep?.detail && (
+            <div style={{ marginBottom: 8, fontSize: 11, opacity: 0.65 }}>
+              {pullStep.detail}
+            </div>
+          )}
+          {!pullBusy && (
+            <SelectivePanel heading="Include in pull" includes={pullIncludes} onChange={setPullIncludes} />
+          )}
+          {pullErr && <div style={styles.banner}><Banner variant="error">{pullErr}</Banner></div>}
+          {pullResult && <div style={styles.banner}><Banner variant="success">{pullResult}</Banner></div>}
+        </>
+      )}
     </section>
   );
 }
@@ -270,8 +647,18 @@ function UnlinkedState({
   const [apps, setApps] = useState<AppSummary[] | undefined>();
   const [selectedServerId, setSelectedServerId] = useState<number | undefined>();
   const [selectedAppId, setSelectedAppId] = useState<number | undefined>();
-  const [busy, setBusy] = useState(false);
+  const [appDetail, setAppDetail] = useState<AppDetail | undefined>();
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [smokeResult, setSmokeResult] = useState<SmokeAppResponse | undefined>();
+  const [smokeBusy, setSmokeBusy] = useState(false);
+  const [smokeError, setSmokeError] = useState<string | undefined>();
+  const [credentialBusy, setCredentialBusy] = useState(false);
+  const [credentialError, setCredentialError] = useState<string | undefined>();
+  const [linkBusy, setLinkBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
+
+  const busy = linkBusy || smokeBusy || credentialBusy;
+  const canLink = Boolean(appDetail?.sftp.password && smokeResult);
 
   useEffect(() => {
     let cancelled = false;
@@ -286,32 +673,104 @@ function UnlinkedState({
     let cancelled = false;
     setApps(undefined);
     setSelectedAppId(undefined);
+    setAppDetail(undefined);
+    setSmokeResult(undefined);
+    setSmokeError(undefined);
+    setCredentialError(undefined);
     ipcClient.listApps({ serverId: selectedServerId })
       .then((res) => { if (!cancelled) setApps(res.apps); })
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); });
     return () => { cancelled = true; };
   }, [selectedServerId]);
 
+  // Fetch app details when an app is selected
+  useEffect(() => {
+    if (!selectedServerId || !selectedAppId) {
+      setAppDetail(undefined);
+      setSmokeResult(undefined);
+      setSmokeError(undefined);
+      setCredentialError(undefined);
+      return;
+    }
+    let cancelled = false;
+    setDetailLoading(true);
+    setAppDetail(undefined);
+    setSmokeResult(undefined);
+    setSmokeError(undefined);
+    setCredentialError(undefined);
+    ipcClient.getApp({ serverId: selectedServerId, appId: selectedAppId })
+      .then((res) => { if (!cancelled) setAppDetail(res.app); })
+      .catch(() => { /* non-fatal — we still have the summary */ })
+      .finally(() => { if (!cancelled) setDetailLoading(false); });
+    return () => { cancelled = true; };
+  }, [selectedServerId, selectedAppId]);
+
+  const runSmoke = async () => {
+    if (!selectedServerId || !selectedAppId) return;
+    setSmokeBusy(true);
+    setSmokeResult(undefined);
+    setSmokeError(undefined);
+    try {
+      const res = await ipcClient.smokeApp({
+        serverId: selectedServerId,
+        appId: selectedAppId,
+      });
+      setSmokeResult(res);
+    } catch (e) {
+      setSmokeError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSmokeBusy(false);
+    }
+  };
+
   const link = async () => {
     if (!selectedServerId || !selectedAppId) return;
     const app = apps?.find((a) => a.id === selectedAppId);
-    setBusy(true);
+    setLinkBusy(true);
     setError(undefined);
     try {
+      const server = servers?.find((s) => s.id === selectedServerId);
+      const fqdn = appDetail?.cname || app?.cname || appDetail?.appFqdn || app?.appFqdn;
+      const remoteUrl = fqdn ? `https://${fqdn}` : '';
       const res = await ipcClient.mapSite({
         localSiteId: site.id,
         serverId: selectedServerId,
         appId: selectedAppId,
         appLabel: app?.label ?? `App ${selectedAppId}`,
-        remoteUrl: app?.appFqdn ? `https://${app.appFqdn}` : '',
+        serverLabel: server?.label,
+        remoteUrl,
       });
       onLinked(res.mapping);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setBusy(false);
+      setLinkBusy(false);
     }
   };
+
+  const createCredentials = async () => {
+    if (!selectedServerId || !selectedAppId) return;
+    setCredentialBusy(true);
+    setCredentialError(undefined);
+    try {
+      const res = await ipcClient.createAppCredential({ serverId: selectedServerId, appId: selectedAppId });
+      setAppDetail((prev) => prev
+        ? { ...prev, sftp: res.sftp, db: { ...prev.db, password: res.sftp.password } }
+        : prev);
+      setSmokeResult(undefined);
+      setSmokeError(undefined);
+    } catch (e) {
+      setCredentialError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCredentialBusy(false);
+    }
+  };
+
+  const selectedApp = apps?.find((a) => a.id === selectedAppId);
+  const serverOptions: Record<string, string> = {};
+  servers?.forEach((s) => { serverOptions[String(s.id)] = s.label; });
+  const appOptions: Record<string, string> = {};
+  apps?.filter((a) => a.isWordPress).forEach((a) => { appOptions[String(a.id)] = a.label; });
 
   return (
     <section>
@@ -320,59 +779,150 @@ function UnlinkedState({
       </Banner>
 
       <div style={styles.row}>
-        <Title size="s" tag="h2">
-          Link to a Cloudways app
-        </Title>
+        <Title size="s" tag="h2">Link to a Cloudways app</Title>
       </div>
       <div style={styles.row}>
         <Text>
-          Pick the Cloudways app this Local site should sync with. Once linked,
-          you can push local changes with one click.
+          Pick the Cloudways app this Local site should sync with.
+          Once linked, you can push and pull with one click.
         </Text>
       </div>
 
-      <div style={styles.pickerRow}>
-        <label style={styles.pickerLabel}>
-          <Text size="caption" style={{ marginBottom: 4 }}>Server</Text>
-          <select
-            style={styles.select}
-            value={selectedServerId ?? ''}
-            onChange={(e) => setSelectedServerId(e.target.value ? Number(e.target.value) : undefined)}
-            disabled={!servers}
-          >
-            <option value="">{servers ? 'Select a server\u2026' : 'Loading\u2026'}</option>
-            {servers?.map((s) => (
-              <option key={s.id} value={s.id}>{s.label}</option>
-            ))}
-          </select>
-        </label>
+      <div style={styles.row}>
+        <FlySelect
+          id="CloudwaysSync_ServerSelect"
+          className="cws-local-select"
+          style={styles.localSelect}
+          value={selectedServerId ? String(selectedServerId) : undefined}
+          onChange={(val: string) => setSelectedServerId(val ? Number(val) : undefined)}
+          options={serverOptions}
+          placeholder={servers ? 'Select a server…' : 'Loading servers…'}
+          emptyPlaceholder={servers ? 'No servers found' : 'Loading servers…'}
+          disabled={!servers || busy}
+        />
       </div>
 
       {selectedServerId && (
-        <div style={styles.pickerRow}>
-          <label style={styles.pickerLabel}>
-            <Text size="caption" style={{ marginBottom: 4 }}>App</Text>
-            <select
-              style={styles.select}
-              value={selectedAppId ?? ''}
-              onChange={(e) => setSelectedAppId(e.target.value ? Number(e.target.value) : undefined)}
-              disabled={!apps}
-            >
-              <option value="">{apps ? 'Select an app\u2026' : 'Loading\u2026'}</option>
-              {apps?.filter((a) => a.isWordPress).map((a) => (
-                <option key={a.id} value={a.id}>{a.label}</option>
-              ))}
-            </select>
-          </label>
+        <div style={styles.row}>
+          <FlySelect
+            id="CloudwaysSync_AppSelect"
+            className="cws-local-select"
+            style={styles.localSelect}
+            value={selectedAppId ? String(selectedAppId) : undefined}
+            onChange={(val: string) => setSelectedAppId(val ? Number(val) : undefined)}
+            options={appOptions}
+            placeholder={apps ? 'Select an app…' : 'Loading apps…'}
+            emptyPlaceholder={apps ? 'No WordPress apps found' : 'Loading apps…'}
+            disabled={!apps || busy}
+          />
         </div>
       )}
 
-      {selectedAppId && (
-        <div style={styles.row}>
-          <Button onClick={link} disabled={busy}>
-            {busy ? 'Linking\u2026' : 'Link this app'}
-          </Button>
-        </div>
+      {selectedAppId && selectedApp && (
+        <>
+          <div style={styles.linkedInfo}>
+            <Text style={styles.linkedHeading}>App Details</Text>
+            {detailLoading ? (
+              <div style={styles.loadingRow}>
+                <span className="cws-spinner" />
+                <Text size="caption" style={{ opacity: 0.6 }}>Loading app details…</Text>
+              </div>
+            ) : (
+              <div style={styles.linkedGrid}>
+                <Text size="caption" style={styles.linkedLabel}>App</Text>
+                <Text style={styles.linkedValue}>{selectedApp.label}</Text>
+
+                {(appDetail?.cname || selectedApp.cname || appDetail?.appFqdn || selectedApp.appFqdn) && (
+                  <>
+                    <Text size="caption" style={styles.linkedLabel}>URL</Text>
+                    <Text style={{ ...styles.linkedValue, color: '#51bb7b' }}>
+                      https://{appDetail?.cname || selectedApp.cname || appDetail?.appFqdn || selectedApp.appFqdn}
+                    </Text>
+                  </>
+                )}
+
+                <Text size="caption" style={styles.linkedLabel}>Type</Text>
+                <Text style={styles.linkedValue}>{selectedApp.application}</Text>
+
+                {(appDetail?.appVersion || selectedApp.appVersion) && (
+                  <>
+                    <Text size="caption" style={styles.linkedLabel}>WP</Text>
+                    <Text style={styles.linkedValue}>
+                      {appDetail?.appVersion ?? selectedApp.appVersion}
+                    </Text>
+                  </>
+                )}
+
+                {appDetail?.sftp.password && (
+                  <>
+                    <Text size="caption" style={styles.linkedLabel}>SFTP</Text>
+                    <Text style={styles.linkedValue}>
+                      {appDetail.sftp.user}@{appDetail.sftp.host}
+                    </Text>
+                  </>
+                )}
+
+                {appDetail?.sftp.password && (
+                  <>
+                    <Text size="caption" style={styles.linkedLabel}>Shell</Text>
+                    <Text style={{
+                      ...styles.linkedValue,
+                      color: smokeResult ? '#51bb7b' : 'rgba(255,255,255,0.4)',
+                    }}>
+                      {smokeResult ? 'Verified' : 'Run test to verify'}
+                    </Text>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+
+          {!detailLoading && !appDetail?.sftp.password && (
+            <div style={styles.credentialsNotice}>
+              <div>
+                <Text style={styles.credentialsTitle}>SSH/SFTP access is missing for this app</Text>
+                <Text size="caption" style={styles.credentialsCopy}>
+                  Create app-level credentials and enable SSH shell access before linking, testing, pulling, or pushing this WordPress site.
+                </Text>
+              </div>
+              <Button onClick={createCredentials} disabled={busy}>
+                {credentialBusy ? 'Creating…' : 'Create SSH/SFTP + shell access'}
+              </Button>
+              {credentialError && (
+                <div style={styles.credentialsError}>
+                  <Banner variant="error">{credentialError}</Banner>
+                </div>
+              )}
+            </div>
+          )}
+
+          {!detailLoading && appDetail?.sftp.password && (
+            <div style={styles.row}>
+              <Text style={styles.linkedHeading}>Connection test</Text>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 }}>
+                <Button onClick={runSmoke} disabled={busy}>
+                  {smokeBusy ? 'Testing…' : 'Test WP-CLI over SSH'}
+                </Button>
+              </div>
+              {smokeResult && (
+                <Banner variant="success" style={{ marginTop: 8 }}>
+                  Connected — {smokeResult.home} ({smokeResult.elapsedMs}ms)
+                </Banner>
+              )}
+              {smokeError && (
+                <Banner variant="error" style={{ marginTop: 8 }}>{smokeError}</Banner>
+              )}
+            </div>
+          )}
+
+          {canLink && (
+            <div style={styles.row}>
+              <Button onClick={link} disabled={busy}>
+                {linkBusy ? 'Linking…' : 'Link this app'}
+              </Button>
+            </div>
+          )}
+        </>
       )}
 
       {error && <div style={styles.banner}><Banner variant="error">{error}</Banner></div>}
@@ -396,9 +946,11 @@ function DisconnectedState(): React.ReactElement {
   );
 }
 
-// --- Selective push panel ---
+// --- Selective sync panel (shared by push & pull) ---
 
-const WP_CONTENT_OPTIONS: Array<{ key: keyof PushIncludes; label: string }> = [
+type SyncIncludes = PushIncludes | PullIncludes;
+
+const WP_CONTENT_OPTIONS: Array<{ key: keyof SyncIncludes; label: string }> = [
   { key: 'uploads', label: 'Uploads (media)' },
   { key: 'plugins', label: 'Plugins' },
   { key: 'themes', label: 'Themes' },
@@ -407,13 +959,15 @@ const WP_CONTENT_OPTIONS: Array<{ key: keyof PushIncludes; label: string }> = [
 ];
 
 function SelectivePanel({
+  heading,
   includes,
   onChange,
 }: {
-  includes: PushIncludes;
-  onChange: (next: PushIncludes) => void;
+  heading: string;
+  includes: SyncIncludes;
+  onChange: (next: SyncIncludes) => void;
 }): React.ReactElement {
-  const toggle = (key: keyof PushIncludes) => {
+  const toggle = (key: keyof SyncIncludes) => {
     const next = { ...includes, [key]: !includes[key] };
     const anySubOn = WP_CONTENT_OPTIONS.some((o) => next[o.key]);
     next.wpContent = anySubOn;
@@ -432,7 +986,7 @@ function SelectivePanel({
 
   return (
     <div style={selectiveStyles.panel}>
-      <Text style={selectiveStyles.heading}>Include in push</Text>
+      <Text style={selectiveStyles.heading}>{heading}</Text>
       <div style={selectiveStyles.grid}>
         <label style={selectiveStyles.item}>
           <Checkbox checked={includes.database} onChange={() => toggle('database')} />
@@ -503,6 +1057,9 @@ const styles: Record<string, React.CSSProperties> = {
   header: { marginBottom: 24 },
   row: { marginTop: 12 },
   banner: { marginTop: 12 },
+  localSelect: {
+    width: 180,
+  },
   center: {
     display: 'flex',
     alignItems: 'center',
@@ -516,25 +1073,100 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'rgba(255,255,255,0.04)',
     borderRadius: 6,
   },
+  linkedHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  linkedHeading: {
+    fontSize: 11,
+    fontWeight: 600,
+    textTransform: 'uppercase' as const,
+    letterSpacing: 0.5,
+    opacity: 0.5,
+    margin: 0,
+  },
+  unlinkBtn: {
+    fontSize: 11,
+    color: '#d94f4f',
+  },
+  loadingRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+    padding: '16px 0 8px',
+  },
+  linkedGrid: {
+    display: 'grid',
+    gridTemplateColumns: '50px 1fr',
+    gap: '6px 12px',
+    alignItems: 'baseline',
+  },
+  linkedLabel: {
+    opacity: 0.5,
+    fontSize: 12,
+  },
+  linkedValue: {
+    fontWeight: 500,
+    fontSize: 13,
+    overflow: 'hidden' as const,
+    textOverflow: 'ellipsis' as const,
+    whiteSpace: 'nowrap' as const,
+  },
+  credentialsNotice: {
+    display: 'grid',
+    gridTemplateColumns: '1fr auto',
+    alignItems: 'center',
+    gap: 12,
+    marginTop: 8,
+    padding: '12px 14px',
+    background: 'rgba(255,255,255,0.04)',
+    border: '1px solid rgba(255,255,255,0.08)',
+    borderRadius: 6,
+  },
+  credentialsTitle: {
+    display: 'block',
+    fontSize: 13,
+    fontWeight: 600,
+    marginBottom: 4,
+  },
+  credentialsCopy: {
+    display: 'block',
+    opacity: 0.62,
+  },
+  credentialsError: {
+    gridColumn: '1 / -1',
+  },
+  tabs: {
+    display: 'flex',
+    gap: 0,
+    marginBottom: 16,
+    borderBottom: '1px solid rgba(255,255,255,0.1)',
+  },
+  tab: {
+    padding: '8px 16px',
+    background: 'transparent',
+    border: 'none',
+    borderBottom: '2px solid transparent',
+    color: 'rgba(255,255,255,0.5)',
+    cursor: 'pointer',
+    fontSize: 13,
+    fontWeight: 500,
+  },
+  tabActive: {
+    padding: '8px 16px',
+    background: 'transparent',
+    border: 'none',
+    borderBottom: '2px solid #51bb7b',
+    color: '#fff',
+    cursor: 'pointer',
+    fontSize: 13,
+    fontWeight: 600,
+  },
   actionBar: {
     display: 'flex',
     alignItems: 'center',
     marginBottom: 16,
-  },
-  pickerRow: {
-    marginTop: 12,
-  },
-  pickerLabel: {
-    display: 'block',
-  },
-  select: {
-    width: '100%',
-    padding: '8px 12px',
-    borderRadius: 4,
-    border: '1px solid rgba(255,255,255,0.15)',
-    background: '#303031',
-    color: '#fff',
-    fontSize: 13,
-    outline: 'none',
   },
 };

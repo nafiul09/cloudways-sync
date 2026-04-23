@@ -8,7 +8,7 @@
 // see a thrown error.
 
 import { CloudwaysError } from '../cloudways/errors';
-import { EncryptionUnavailableError } from '../credentials';
+import { AppPasswordStore, EncryptionUnavailableError } from '../credentials';
 import type { ConnectionService } from '../connection/service';
 import {
   CHANNELS,
@@ -60,9 +60,10 @@ async function runHandler<T>(fn: () => Promise<T>): Promise<IpcResult<T>> {
 export type RegisterOptions = {
   addIpcAsyncListener: AddIpcAsyncListener;
   connection: ConnectionService;
+  appPasswords?: AppPasswordStore;
 };
 
-export function registerConnectionHandlers({ addIpcAsyncListener, connection }: RegisterOptions): void {
+export function registerConnectionHandlers({ addIpcAsyncListener, connection, appPasswords }: RegisterOptions): void {
   const handlers: Array<readonly [string, (...args: unknown[]) => Promise<IpcResult<unknown>>]> = [
     [
       CHANNELS.CONNECT,
@@ -83,6 +84,7 @@ export function registerConnectionHandlers({ addIpcAsyncListener, connection }: 
       () =>
         runHandler<DisconnectResponse>(async () => {
           await connection.disconnect();
+          await appPasswords?.clear();
           return { connected: false };
         }),
     ],

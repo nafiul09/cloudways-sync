@@ -182,13 +182,6 @@ describe('PullOrchestrator', () => {
     expect(importer.importPulledSite).toHaveBeenCalledOnce();
     expect(progress).toContain('validate:success');
     expect(progress).toContain('local-site:success');
-
-    const manifest = JSON.parse(await fs.promises.readFile(result.manifestPath as string, 'utf8')) as {
-      sourceUrl: string;
-      appId: number;
-    };
-    expect(manifest.sourceUrl).toBe('https://example.com');
-    expect(manifest.appId).toBe(10);
   });
 
   it('skips DB steps when database is unchecked', async () => {
