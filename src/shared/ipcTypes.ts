@@ -37,6 +37,9 @@ export const CHANNELS = {
   GET_MAPPING: 'cs:getMapping',
   GET_MAPPING_BY_APP: 'cs:getMappingByApp',
   LIST_MAPPINGS: 'cs:listMappings',
+
+  // Breeze plugin detection
+  DETECT_BREEZE: 'cs:detectBreeze',
 } as const;
 
 export type ChannelName = (typeof CHANNELS)[keyof typeof CHANNELS];
@@ -225,6 +228,17 @@ export type JobProgressEvent = {
 
 export type JobDoneEvent = RunJobResponse;
 
+// --- Breeze plugin detection ---
+
+export type BreezeStatus = {
+  installed: boolean;
+  active: boolean;
+  version?: string;
+};
+
+export type DetectBreezeRequest = { serverId: number; appId: number };
+export type DetectBreezeResponse = { breezeStatus: BreezeStatus };
+
 // --- Phase 7: Push planning + execution ---
 
 export type PushIncludes = PullIncludes; // same granularity for push
@@ -242,6 +256,8 @@ export type PlanPushRequest = {
   includes?: Partial<PushIncludes>;
   /** For Mode B: label for the new Cloudways app. Required when appId is 0. */
   newAppLabel?: string;
+  /** When true, re-activate the Breeze caching plugin on the remote after push. */
+  reactivateBreeze?: boolean;
 };
 
 export type PlanPushResponse = {

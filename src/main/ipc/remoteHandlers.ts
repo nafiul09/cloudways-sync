@@ -15,6 +15,8 @@ import {
   CHANNELS,
   type CreateAppCredentialRequest,
   type CreateAppCredentialResponse,
+  type DetectBreezeRequest,
+  type DetectBreezeResponse,
   type IpcResult,
   type SerializedError,
   type SmokeAppRequest,
@@ -23,7 +25,7 @@ import {
 import { AppPasswordStore, EncryptionUnavailableError } from '../credentials';
 import { RemoteError } from '../remote/errors';
 import { SshClient } from '../remote/SshClient';
-import { cloudwaysAppPublicPath, wpCli } from '../remote/wpCli';
+import { cloudwaysAppPublicPath, detectBreezePlugin, wpCli } from '../remote/wpCli';
 import type { AddIpcAsyncListener } from './handlers';
 
 function isShellAccessDisabled(err: unknown): boolean {
@@ -216,6 +218,55 @@ export function registerRemoteHandlers({
           stderr: res.stderr.trimEnd(),
           elapsedMs: Date.now() - started,
         };
+      } finally {
+        await ssh.end();
+      }
+    });
+  });
+
+  addIpcAsyncListener(CHANNELS.DETECT_BREEZE, (...args: unknown[]) => {
+    const payload = args[0] as DetectBreezeRequest | undefined;
+    return runHandler<DetectBreezeResponse>(async () => {
+      if (!payload || typeof payload.serverId !== 'number' || typeof payload.appId !== 'number') {
+        throw new RemoteError('SSH_COMMAND_FAILED', 'serverId and appId are required.', {
+          retriable: false,
+        });
+      }
+
+      const client = connection.requireClient();
+      const servers = await client.listServers();
+      const server = servers.find((s) => s.id === payload.serverId);
+      if (!server) {
+        throw new RemoteError('SSH_COMMAND_FAILED', `Server ${payload.serverId} not found.`, { retriable: false });
+      }
+      const app = server.apps.find((a) => a.id === payload.appId);
+      if (!app) {
+        throw new RemoteError('SSH_COMMAND_FAILED', `App ${payload.appId} not found.`, { retriable: false });
+      }
+
+      let creds = await client.getAppCreds(server.id, app.id);
+      let primary = creds[0];
+      if (!primary?.password) {
+        creds = await client.getAppCreds(server.id, app.id);
+        primary = creds[0];
+      }
+
+      const host = server.public_ip ?? server.server_fqdn;
+      const username = primary?.sys_user ?? app.sys_user;
+      const storedPassword = appPasswords ? await appPasswords.get(server.id, app.id) : undefined;
+      const password = primary?.password || storedPassword;
+      const appUser = app.sys_user ?? primary?.sys_user;
+
+      if (!host || !username || !password || !appUser) {
+        throw new RemoteError('SSH_AUTH_FAILED', 'Missing SSH credentials for Breeze detection.', { retriable: false });
+      }
+
+      const appPublicPath = cloudwaysAppPublicPath(appUser);
+      const ssh = new SshClient({ host, username, password });
+      try {
+        await ssh.connect();
+        const breezeStatus = await detectBreezePlugin({ ssh, appPublicPath });
+        return { breezeStatus };
       } finally {
         await ssh.end();
       }

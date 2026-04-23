@@ -395,20 +395,23 @@ export class ApiClient {
     }
 
     if (!enabled) {
-      await this.enableAppSsh(serverId, appId);
+      try {
+        await this.enableAppSsh(serverId, appId);
+      } catch (err) {
+        // 422 = "operation already in progress" — the SSH toggle may be
+        // propagating from a previous attempt, or the server is busy with
+        // another operation. Continue and let the SSH connect surface any
+        // real platform-side problem.
+        if (!(err instanceof CloudwaysError && err.status === 422)) throw err;
+      }
       await this.sleep(5_000);
       return;
     }
 
-    try {
-      await this.enableAppSsh(serverId, appId);
-    } catch {
-      // Some accounts respond with an error when the toggle is already on.
-      // The status check said enabled, so keep going and let the SSH command
-      // surface any real platform-side problem.
-    }
-    // Brief wait for the SSH toggle to propagate on the Cloudways side.
-    await this.sleep(3_000);
+    // SSH is already enabled — no need to call enableAppSsh again.
+    // A redundant POST would trigger a server operation on Cloudways,
+    // which can cause 422 "operation in progress" on the next API call
+    // (e.g. triggerAppBackup) if the sleep isn't long enough.
   }
 
   /** Whitelist an IP for SSH/SFTP on a server. */

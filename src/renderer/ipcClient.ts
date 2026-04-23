@@ -10,6 +10,8 @@ import {
   type ConnectResponse,
   type CreateAppCredentialRequest,
   type CreateAppCredentialResponse,
+  type DetectBreezeRequest,
+  type DetectBreezeResponse,
   type DisconnectResponse,
   type GetAppRequest,
   type GetAppResponse,
@@ -83,6 +85,7 @@ export const ipcClient = {
   getMapping: (req: GetMappingRequest) => invoke<GetMappingResponse>(CHANNELS.GET_MAPPING, req),
   getMappingByApp: (req: GetMappingByAppRequest) => invoke<GetMappingByAppResponse>(CHANNELS.GET_MAPPING_BY_APP, req),
   listMappings: () => invoke<ListMappingsResponse>(CHANNELS.LIST_MAPPINGS, {}),
+  detectBreeze: (req: DetectBreezeRequest) => invoke<DetectBreezeResponse>(CHANNELS.DETECT_BREEZE, req),
 };
 
 // --- Streaming job events ----------------------------------------------

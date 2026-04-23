@@ -17,6 +17,24 @@ const WP_CONTENT_DIRS: Record<string, string> = {
   languages: 'languages',
 };
 
+/**
+ * Return the list of wp-content subdir names the user selected.
+ * Example: { plugins: true, themes: true, uploads: false, ... }
+ *   → ['plugins', 'themes']
+ *
+ * Used by the pull importer and push orchestrator so each target
+ * replaces ONLY the selected subdirs, leaving the rest untouched.
+ * Previously both sides would wipe the whole wp-content tree, which
+ * destroyed unselected dirs on the destination.
+ */
+export function selectedWpContentSubdirs(includes: PullIncludes): string[] {
+  const out: string[] = [];
+  for (const [key, dir] of Object.entries(WP_CONTENT_DIRS)) {
+    if (includes[key as keyof PullIncludes]) out.push(dir);
+  }
+  return out;
+}
+
 /** Files that should never be synced regardless of checkbox state. */
 const ALWAYS_EXCLUDE = [
   'cache',
@@ -28,6 +46,10 @@ const ALWAYS_EXCLUDE = [
   'error_log',
   'advanced-cache.php',
   'object-cache.php',
+  // Breeze is a Cloudways server-managed caching plugin that causes
+  // fatal errors when pulled into Local (missing server-side configs).
+  // On push, excluding it preserves the remote's Breeze installation.
+  'plugins/breeze',
 ];
 
 /**

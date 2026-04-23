@@ -13,9 +13,11 @@ import type { Site } from '@getflywheel/local';
 import { ipcClient, IpcCallError, subscribeJobProgress } from '../ipcClient';
 import { refreshSiteListIcons } from '../sidebar/injectSiteListIcons';
 import { showSyncModal, failSyncModal } from '../SyncModal';
+import { MaskedEmail } from '../components/MaskedEmail';
 import type {
   AppDetail,
   AppSummary,
+  BreezeStatus,
   ConnectionStatusPayload,
   JobProgressEvent,
   PullIncludes,
@@ -36,6 +38,7 @@ const PUSH_STEP_LABELS: Record<string, string> = {
   'remote-db-import': 'Importing DB on server',
   'search-replace': 'Rewriting URLs',
   'cache-flush': 'Flushing caches',
+  'breeze-reactivate': 'Re-activating Breeze',
   cleanup: 'Cleaning up',
 };
 
@@ -335,8 +338,6 @@ function LinkedState({
 
   // --- Push state ---
   const [pushBusy, setPushBusy] = useState(false);
-  const [pushResult, setPushResult] = useState<string | undefined>();
-  const [pushErr, setPushErr] = useState<string | undefined>();
   const [pushStep, setPushStep] = useState<SyncStep | undefined>();
   const [pushIncludes, setPushIncludes] = useState<PushIncludes>({ ...DEFAULT_INCLUDES });
   const [lastPushUndoId, setLastPushUndoId] = useState<string | undefined>();
@@ -346,13 +347,15 @@ function LinkedState({
 
   // --- Pull state ---
   const [pullBusy, setPullBusy] = useState(false);
-  const [pullResult, setPullResult] = useState<string | undefined>();
-  const [pullErr, setPullErr] = useState<string | undefined>();
   const [pullStep, setPullStep] = useState<SyncStep | undefined>();
   const [pullIncludes, setPullIncludes] = useState<PullIncludes>({ ...DEFAULT_INCLUDES });
   const [appDetail, setAppDetail] = useState<AppDetail | undefined>();
   const [credentialBusy, setCredentialBusy] = useState(false);
   const [credentialError, setCredentialError] = useState<string | undefined>();
+
+  // --- Breeze state ---
+  const [breezeStatus, setBreezeStatus] = useState<BreezeStatus | undefined>();
+  const [reactivateBreeze, setReactivateBreeze] = useState(true);
 
   const busy = pushBusy || pullBusy || credentialBusy;
   const canSync = Boolean(appDetail?.sftp.password);
@@ -366,6 +369,17 @@ function LinkedState({
       .catch((e) => { if (!cancelled) setCredentialError(e instanceof Error ? e.message : String(e)); });
     return () => { cancelled = true; };
   }, [mapping.serverId, mapping.appId]);
+
+  // Detect Breeze plugin on the remote once app details are loaded.
+  useEffect(() => {
+    if (!appDetail?.sftp.password) return;
+    let cancelled = false;
+    setBreezeStatus(undefined);
+    ipcClient.detectBreeze({ serverId: mapping.serverId, appId: mapping.appId })
+      .then((res) => { if (!cancelled) setBreezeStatus(res.breezeStatus); })
+      .catch(() => { if (!cancelled) setBreezeStatus({ installed: false, active: false }); });
+    return () => { cancelled = true; };
+  }, [appDetail?.sftp.password, mapping.serverId, mapping.appId]);
 
   // Subscribe to job progress for whichever operation is running.
   useEffect(() => {
@@ -392,8 +406,6 @@ function LinkedState({
   // --- Push handler ---
   const runPush = async () => {
     setPushBusy(true);
-    setPushResult(undefined);
-    setPushErr(undefined);
     setPushStep(undefined);
     setLastPushUndoId(undefined);
     showSyncModal('push', mapping.appLabel);
@@ -405,9 +417,9 @@ function LinkedState({
         localUrl: site.url || `http://${site.domain}`,
         webRootPath: site.paths?.webRoot || `${site.path}/app/public`,
         includes: pushIncludes,
+        reactivateBreeze: breezeStatus?.active ? reactivateBreeze : false,
       });
       await ipcClient.runJob({ planId: plan.planId });
-      setPushResult('Push completed successfully.');
       try {
         const undos = await ipcClient.listUndo();
         const latest = undos.records.find(
@@ -416,9 +428,7 @@ function LinkedState({
         if (latest) setLastPushUndoId(latest.id);
       } catch { /* non-fatal */ }
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setPushErr(msg);
-      failSyncModal(msg);
+      failSyncModal(e instanceof Error ? e.message : String(e));
     } finally {
       setPushBusy(false);
       setPushStep(undefined);
@@ -444,8 +454,6 @@ function LinkedState({
   // --- Pull handler ---
   const runPull = async () => {
     setPullBusy(true);
-    setPullResult(undefined);
-    setPullErr(undefined);
     setPullStep(undefined);
     showSyncModal('pull', mapping.appLabel);
     try {
@@ -458,11 +466,8 @@ function LinkedState({
         includes: pullIncludes,
       });
       await ipcClient.runJob({ planId: plan.planId });
-      setPullResult('Pull completed — site updated from Cloudways.');
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setPullErr(msg);
-      failSyncModal(msg);
+      failSyncModal(e instanceof Error ? e.message : String(e));
     } finally {
       setPullBusy(false);
       setPullStep(undefined);
@@ -506,7 +511,7 @@ function LinkedState({
   return (
     <section>
       <Banner variant="success">
-        Connected as <strong>{email}</strong>
+        Connected as <MaskedEmail email={email} bold />
       </Banner>
 
       <div style={styles.linkedInfo}>
@@ -586,6 +591,35 @@ function LinkedState({
 
       {mode === 'push' ? (
         <>
+          {pushBusy && pushStep?.detail && (
+            <div style={{ marginBottom: 8, fontSize: 11, opacity: 0.65 }}>
+              {pushStep.detail}
+            </div>
+          )}
+          {!pushBusy && (
+            <>
+              <SelectivePanel heading="Include in push" includes={pushIncludes} onChange={setPushIncludes} />
+              {breezeStatus?.active && (
+                <div style={styles.breezeNotice}>
+                  <div style={styles.breezeHeader}>
+                    <Checkbox
+                      checked={reactivateBreeze}
+                      onChange={() => setReactivateBreeze(!reactivateBreeze)}
+                    />
+                    <div>
+                      <Text style={styles.breezeTitle}>Breeze caching plugin detected</Text>
+                      <Text size="caption" style={styles.breezeDesc}>
+                        Re-activate Breeze on Cloudways after push. The plugin is excluded
+                        from sync because it requires Cloudways server configuration to function.
+                      </Text>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+          {undoErr && <div style={styles.banner}><Banner variant="error">{undoErr}</Banner></div>}
+          {undoResult && <div style={styles.banner}><Banner variant="success">{undoResult}</Banner></div>}
           <div style={styles.actionBar}>
             <Button onClick={runPush} disabled={busy || !canSync}>
               {pushLabel}
@@ -596,26 +630,9 @@ function LinkedState({
               </Button>
             )}
           </div>
-          {pushBusy && pushStep?.detail && (
-            <div style={{ marginBottom: 8, fontSize: 11, opacity: 0.65 }}>
-              {pushStep.detail}
-            </div>
-          )}
-          {!pushBusy && (
-            <SelectivePanel heading="Include in push" includes={pushIncludes} onChange={setPushIncludes} />
-          )}
-          {pushErr && <div style={styles.banner}><Banner variant="error">{pushErr}</Banner></div>}
-          {pushResult && <div style={styles.banner}><Banner variant="success">{pushResult}</Banner></div>}
-          {undoErr && <div style={styles.banner}><Banner variant="error">{undoErr}</Banner></div>}
-          {undoResult && <div style={styles.banner}><Banner variant="success">{undoResult}</Banner></div>}
         </>
       ) : (
         <>
-          <div style={styles.actionBar}>
-            <Button onClick={runPull} disabled={busy || !canSync}>
-              {pullLabel}
-            </Button>
-          </div>
           {pullBusy && pullStep?.detail && (
             <div style={{ marginBottom: 8, fontSize: 11, opacity: 0.65 }}>
               {pullStep.detail}
@@ -624,8 +641,11 @@ function LinkedState({
           {!pullBusy && (
             <SelectivePanel heading="Include in pull" includes={pullIncludes} onChange={setPullIncludes} />
           )}
-          {pullErr && <div style={styles.banner}><Banner variant="error">{pullErr}</Banner></div>}
-          {pullResult && <div style={styles.banner}><Banner variant="success">{pullResult}</Banner></div>}
+          <div style={styles.actionBar}>
+            <Button onClick={runPull} disabled={busy || !canSync}>
+              {pullLabel}
+            </Button>
+          </div>
         </>
       )}
     </section>
@@ -775,7 +795,7 @@ function UnlinkedState({
   return (
     <section>
       <Banner variant="success">
-        Connected as <strong>{email}</strong>
+        Connected as <MaskedEmail email={email} bold />
       </Banner>
 
       <div style={styles.row}>
@@ -938,8 +958,8 @@ function DisconnectedState(): React.ReactElement {
       <Banner variant="warning">CloudwaysSync isn&rsquo;t connected to a Cloudways account yet.</Banner>
       <div style={styles.row}>
         <Text>
-          Open Local&rsquo;s <strong>Preferences</strong> and pick <strong>CloudwaysSync</strong> in the
-          sidebar to connect your Cloudways API key.
+          Click the <strong>CloudwaysSync</strong> icon in Local&rsquo;s sidebar to connect your
+          Cloudways API key.
         </Text>
       </div>
     </section>
@@ -1167,6 +1187,31 @@ const styles: Record<string, React.CSSProperties> = {
   actionBar: {
     display: 'flex',
     alignItems: 'center',
-    marginBottom: 16,
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  breezeNotice: {
+    marginBottom: 12,
+    padding: '12px 14px',
+    background: 'rgba(81,187,123,0.06)',
+    border: '1px solid rgba(81,187,123,0.18)',
+    borderRadius: 6,
+  },
+  breezeHeader: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: 10,
+    cursor: 'pointer',
+  },
+  breezeTitle: {
+    display: 'block',
+    fontSize: 13,
+    fontWeight: 600,
+    marginBottom: 3,
+  },
+  breezeDesc: {
+    display: 'block',
+    opacity: 0.55,
+    lineHeight: 1.4,
   },
 };

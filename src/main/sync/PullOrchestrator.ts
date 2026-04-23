@@ -11,12 +11,13 @@ import { SshClient, type SshConnectConfig } from '../remote/SshClient';
 import {
   buildWpCommand,
   cloudwaysAppPublicPath,
+  detectBreezePlugin,
   shellQuote,
   wpCli,
   wpOptionGet,
 } from '../remote/wpCli';
 import type { JobProgressEvent, RunJobResponse } from '../../shared/ipcTypes';
-import { shouldSkipStep, tarExcludeFlags } from './Selective';
+import { selectedWpContentSubdirs, shouldSkipStep, tarExcludeFlags } from './Selective';
 import { sweepStaleJobs } from './cleanup';
 import type { PullMetadata, PullPlan, SiteImporter } from './types';
 
@@ -90,20 +91,35 @@ export class PullOrchestrator {
       });
 
       await this.step(jobId, 'backup', async () => {
-        try {
-          const operationId = await this.client.triggerAppBackup(server.id, app.id);
-          await this.client.waitForOperation(operationId, {
-            onTick: (op) => {
-              this.progress(jobId, 'backup', 'running', op.message || String(op.status));
-            },
-          });
-        } catch (err) {
-          // 422 typically means a backup was taken recently or is in progress.
-          // This is non-fatal — we can still pull from the current server state.
-          if (err instanceof CloudwaysError && err.status === 422) {
-            this.progress(jobId, 'backup', 'running', 'Skipped — recent backup exists');
-          } else {
-            throw err;
+        const MAX_BACKUP_ATTEMPTS = 3;
+        const RETRY_DELAY_MS = 15_000;
+        for (let attempt = 1; attempt <= MAX_BACKUP_ATTEMPTS; attempt++) {
+          try {
+            const operationId = await this.client.triggerAppBackup(server.id, app.id);
+            await this.client.waitForOperation(operationId, {
+              onTick: (op) => {
+                const detail = op.message || (op.status != null ? String(op.status) : '');
+                if (detail) this.progress(jobId, 'backup', 'running', detail);
+              },
+            });
+            return; // backup succeeded
+          } catch (err) {
+            if (!(err instanceof CloudwaysError && err.status === 422)) throw err;
+
+            // Distinguish "operation in progress" from "recent backup exists"
+            const isOperationBusy = /operation.*in progress/i.test(err.message);
+            if (isOperationBusy && attempt < MAX_BACKUP_ATTEMPTS) {
+              this.progress(
+                jobId, 'backup', 'running',
+                `Server busy — retrying in ${Math.round(RETRY_DELAY_MS / 1000)}s (attempt ${attempt}/${MAX_BACKUP_ATTEMPTS})…`,
+              );
+              await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+              continue;
+            }
+            // Either a genuine "recent backup" 422, or exhausted retries
+            this.progress(jobId, 'backup', 'running', isOperationBusy
+              ? 'Server busy — proceeding without new backup'
+              : 'Skipped — recent backup exists');
           }
         }
       });
@@ -216,6 +232,7 @@ export class PullOrchestrator {
           metadata,
           importDatabase: plan.includes.database,
           importWpContent: plan.includes.wpContent,
+          wpContentSubdirs: selectedWpContentSubdirs(plan.includes),
           existingSiteId: plan.localSiteId,
         }),
       );
@@ -255,12 +272,14 @@ export class PullOrchestrator {
     if (!app) {
       throw new RemoteError('SSH_COMMAND_FAILED', `App ${appId} not found on server.`, { retriable: false });
     }
-    await this.client.ensureAppSshAccess(server.id, app.id);
+    // Skip ensureAppSshAccess — getAppSshAccess returns unreliable
+    // results, causing enableAppSsh to trigger a server operation that
+    // blocks the backup step with 422 "operation in progress." SSH is
+    // already verified during credential creation + smoke test. If SSH
+    // isn't working, the connect step will surface the error.
     let creds = await this.client.getAppCreds(server.id, app.id);
     let primary = creds[0];
 
-    // Re-fetch once after enabling shell access; Cloudways may expose
-    // app passwords only after the toggle has propagated.
     if (!primary?.password) {
       creds = await this.client.getAppCreds(server.id, app.id);
       primary = creds[0];
@@ -377,10 +396,11 @@ function cloudwaysAppRootPath(appSystemUser: string): string {
 }
 
 async function collectMetadata(ssh: SshClient, appPublicPath: string): Promise<PullMetadata> {
-  const [homeUrl, siteUrl, wpVersion] = await Promise.all([
+  const [homeUrl, siteUrl, wpVersion, breezeStatus] = await Promise.all([
     wpOptionGet({ ssh, appPublicPath }, 'home'),
     wpOptionGet({ ssh, appPublicPath }, 'siteurl'),
     wpCli({ ssh, appPublicPath }, ['core', 'version']).then((r) => r.stdout.trim()).catch(() => undefined),
+    detectBreezePlugin({ ssh, appPublicPath }),
   ]);
   const multisiteCheck = await ssh.exec(
     buildWpCommand(appPublicPath, ['core', 'is-installed', '--network']),
@@ -390,6 +410,7 @@ async function collectMetadata(ssh: SshClient, appPublicPath: string): Promise<P
     siteUrl,
     wpVersion,
     isMultisite: multisiteCheck.code === 0,
+    breezeStatus,
   };
 }
 

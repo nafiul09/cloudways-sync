@@ -1,9 +1,15 @@
 // Global sync progress modal. Rendered as a portal so it persists
 // regardless of Local's page navigation. Blocks all UI interaction
 // while a push/pull is running, showing real-time step progress.
+//
+// On success, the modal auto-dismisses — the SiteToolsPanel's success
+// Banner surfaces the completion message ("Pull completed — site
+// updated from Cloudways"). On failure, the modal stays open with a
+// dismissible error block so the user always sees what went wrong.
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import ReactDOM from 'react-dom';
+import { Banner } from '@getflywheel/local-components';
 import { subscribeJobDone, subscribeJobProgress } from './ipcClient';
 import type { JobDoneEvent, JobProgressEvent } from '../shared/ipcTypes';
 
@@ -20,6 +26,7 @@ const PUSH_STEP_LABELS: Record<string, string> = {
   'remote-db-import': 'Importing DB on server',
   'search-replace': 'Rewriting URLs',
   'cache-flush': 'Flushing caches',
+  'breeze-reactivate': 'Re-activating Breeze',
   cleanup: 'Cleaning up',
 };
 
@@ -41,10 +48,23 @@ const PULL_STEP_LABELS: Record<string, string> = {
 // ---- Global state ----
 
 type SyncMode = 'push' | 'pull';
+
+type RunningState = {
+  phase: 'running';
+  mode: SyncMode;
+  appLabel: string;
+  stepId?: string;
+  percent?: number;
+  bytesTransferred?: number;
+  totalBytes?: number;
+  detail?: string;
+};
+
 type ModalState =
   | { phase: 'idle' }
-  | { phase: 'running'; mode: SyncMode; appLabel: string; stepId?: string; percent?: number; detail?: string }
-  | { phase: 'done'; mode: SyncMode; appLabel: string; result: JobDoneEvent; error?: string };
+  | RunningState
+  | { phase: 'done'; mode: SyncMode; appLabel: string }
+  | { phase: 'error'; mode: SyncMode; appLabel: string; error: string };
 
 let globalState: ModalState = { phase: 'idle' };
 let listeners: Array<(s: ModalState) => void> = [];
@@ -70,19 +90,18 @@ export function showSyncModal(mode: SyncMode, appLabel: string): void {
   setState({ phase: 'running', mode, appLabel });
 }
 
-/** Call if the planPull/planPush itself fails before runJob. */
+/** Call if planPull/planPush or runJob throws. */
 export function failSyncModal(error: string): void {
-  if (globalState.phase !== 'running') return;
+  if (globalState.phase === 'idle') return;
   setState({
-    phase: 'done',
+    phase: 'error',
     mode: globalState.mode,
     appLabel: globalState.appLabel,
-    result: { jobId: '', status: 'failed' },
     error,
   });
 }
 
-/** Dismiss the modal after completion. */
+/** Dismiss the modal (used by the Close button on failures). */
 export function dismissSyncModal(): void {
   setState({ phase: 'idle' });
 }
@@ -109,19 +128,42 @@ function ensureSubscribed() {
       phase: 'running',
       stepId: event.stepId,
       percent,
+      bytesTransferred: event.bytesTransferred,
+      totalBytes: event.totalBytes,
       detail: event.detail,
     });
   });
 
   subscribeJobDone((event: JobDoneEvent) => {
     if (globalState.phase !== 'running') return;
-    setState({
-      phase: 'done',
-      mode: globalState.mode,
-      appLabel: globalState.appLabel,
-      result: event,
-    });
+    if (event.status === 'success') {
+      setState({
+        phase: 'done',
+        mode: globalState.mode,
+        appLabel: globalState.appLabel,
+      });
+    } else {
+      setState({
+        phase: 'error',
+        mode: globalState.mode,
+        appLabel: globalState.appLabel,
+        error: `Sync ${event.status}.`,
+      });
+    }
   });
+}
+
+// ---- Helpers ----
+
+function formatBytes(bytes: number | undefined): string {
+  if (typeof bytes !== 'number' || !isFinite(bytes) || bytes < 0) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(1)} KB`;
+  const mb = kb / 1024;
+  if (mb < 1024) return `${mb.toFixed(1)} MB`;
+  const gb = mb / 1024;
+  return `${gb.toFixed(2)} GB`;
 }
 
 // ---- Modal component ----
@@ -133,82 +175,113 @@ function SyncModalContent(): React.ReactElement | null {
   // Block keyboard shortcuts / tab navigation to elements behind
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Escape') e.stopPropagation();
-    if (e.key === 'Tab') {
-      // Keep focus inside the modal
-      e.preventDefault();
-    }
+    if (e.key === 'Tab') e.preventDefault();
   }, []);
 
   if (state.phase === 'idle') return null;
 
   const labels = state.mode === 'push' ? PUSH_STEP_LABELS : PULL_STEP_LABELS;
-  const modeLabel = state.mode === 'push' ? 'Pushing to' : 'Pulling from';
+  const isRunning = state.phase === 'running';
+  const modeLabel = state.mode === 'push' ? 'Pushing to Cloudways' : 'Pulling from Cloudways';
+  const doneTitle = `${state.mode === 'push' ? 'Push' : 'Pull'} complete`;
+  const failedTitle = `${state.mode === 'push' ? 'Push' : 'Pull'} failed`;
+  const headerTitle =
+    state.phase === 'running' ? modeLabel :
+    state.phase === 'done' ? doneTitle :
+    failedTitle;
+  const successMsg =
+    state.mode === 'push'
+      ? 'Successfully pushed to Cloudways.'
+      : 'Pull completed — site updated from Cloudways.';
+
+  const hasBytes =
+    isRunning &&
+    typeof state.bytesTransferred === 'number' &&
+    typeof state.totalBytes === 'number' &&
+    state.totalBytes > 0;
 
   return (
     <div ref={overlayRef} style={styles.overlay} onKeyDown={handleKeyDown}>
-      <div style={styles.modal}>
-        {/* Header */}
-        <div style={styles.header}>
-          <span style={styles.cwIcon} dangerouslySetInnerHTML={{ __html: CW_ICON }} />
-          <span style={styles.headerText}>
-            {state.phase === 'running'
-              ? `${modeLabel} Cloudways`
-              : state.result.status === 'success'
-                ? `${state.mode === 'push' ? 'Push' : 'Pull'} complete`
-                : `${state.mode === 'push' ? 'Push' : 'Pull'} failed`}
-          </span>
+      <style>{MODAL_CSS}</style>
+      <div style={styles.stack}>
+        <div style={styles.modal}>
+          {/* Header */}
+          <div style={styles.header}>
+            <span style={styles.cwIcon} dangerouslySetInnerHTML={{ __html: CW_ICON }} />
+            <div style={styles.headerText}>
+              <div style={styles.headerTitle}>{headerTitle}</div>
+              <div style={styles.headerSubtitle}>{state.appLabel}</div>
+            </div>
+          </div>
+
+          {isRunning && (
+            <>
+              {/* Step + percent */}
+              <div style={styles.stepRow}>
+                <span className="cws-modal-spinner" />
+                <span style={styles.stepLabel}>
+                  {state.stepId ? (labels[state.stepId] ?? state.stepId) : 'Starting…'}
+                </span>
+                {hasBytes && (
+                  <span style={styles.percent}>{state.percent}%</span>
+                )}
+              </div>
+
+              {/* Progress bar — only during byte-tracked transfers */}
+              {hasBytes && (
+                <>
+                  <div style={styles.progressTrack}>
+                    <div
+                      style={{
+                        ...styles.progressFill,
+                        width: `${typeof state.percent === 'number' ? state.percent : 0}%`,
+                      }}
+                    />
+                  </div>
+                  <div style={styles.infoRow}>
+                    <span style={styles.detail}>{state.detail || '\u00A0'}</span>
+                    <span style={styles.bytesText}>
+                      {formatBytes(state.bytesTransferred)} / {formatBytes(state.totalBytes)}
+                    </span>
+                  </div>
+                </>
+              )}
+
+              {/* Detail only (no progress bar) */}
+              {!hasBytes && state.detail && (
+                <div style={styles.detailOnly}>{state.detail}</div>
+              )}
+            </>
+          )}
+
+          {state.phase === 'done' && (
+            <>
+              <div style={styles.bannerSlot}>
+                <Banner variant="success">{successMsg}</Banner>
+              </div>
+              <button type="button" style={styles.dismissBtn} onClick={dismissSyncModal}>
+                Close
+              </button>
+            </>
+          )}
+
+          {state.phase === 'error' && (
+            <>
+              <div style={styles.bannerSlot}>
+                <Banner variant="error">{state.error}</Banner>
+              </div>
+              <button type="button" style={styles.dismissBtn} onClick={dismissSyncModal}>
+                Close
+              </button>
+            </>
+          )}
         </div>
 
-        {/* App name */}
-        <div style={styles.appLabel}>{state.appLabel}</div>
-
-        {/* Progress area */}
-        {state.phase === 'running' && (
-          <>
-            {/* Spinner + step */}
-            <div style={styles.stepRow}>
-              <span className="cws-spinner" />
-              <span style={styles.stepLabel}>
-                {state.stepId ? (labels[state.stepId] ?? state.stepId) : 'Starting…'}
-              </span>
-            </div>
-
-            {/* Progress bar */}
-            {state.percent != null && (
-              <div style={styles.progressTrack}>
-                <div style={{ ...styles.progressFill, width: `${state.percent}%` }} />
-              </div>
-            )}
-
-            {/* Detail text */}
-            {state.detail && (
-              <div style={styles.detail}>{state.detail}</div>
-            )}
-
-            <div style={styles.warning}>
-              Do not close Local or navigate away while syncing.
-            </div>
-          </>
-        )}
-
-        {/* Done */}
-        {state.phase === 'done' && (
-          <>
-            {state.result.status === 'success' ? (
-              <div style={styles.successMsg}>
-                {state.mode === 'push'
-                  ? 'Successfully pushed to Cloudways.'
-                  : 'Successfully pulled from Cloudways.'}
-              </div>
-            ) : (
-              <div style={styles.errorMsg}>
-                {state.error || `Sync ${state.result.status}.`}
-              </div>
-            )}
-            <button type="button" style={styles.dismissBtn} onClick={dismissSyncModal}>
-              Close
-            </button>
-          </>
+        {/* Warning — lives OUTSIDE the modal card, on the overlay */}
+        {isRunning && (
+          <div style={styles.outsideWarning}>
+            Do not close Local or navigate away while syncing.
+          </div>
         )}
       </div>
     </div>
@@ -233,10 +306,25 @@ export function mountSyncModal(): void {
 }
 
 // ---- Compact CW icon ----
-const CW_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 512 512"
+const CW_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 512 512"
   fill="#51bb7b" fill-rule="evenodd" clip-rule="evenodd" aria-hidden="true">
   <path d="M171.296 275.979H18.344C11.654 275.979 6 270.407 6 263.87c0-6.56 5.653-12.107 12.344-12.107h162.364c7.034-12.345 16.943-22.892 28.838-30.775H84.38c-6.666 0-12.336-5.572-12.336-12.108 0-6.544 5.67-12.107 12.336-12.107h152.495c3.815-11.241 9.55-21.625 16.813-30.775H108.07c-6.69 0-12.344-5.539-12.344-12.107 0-6.536 5.653-12.108 12.344-12.108h172.951c16.193-9.959 35.342-15.71 55.856-15.71 51.167 0 93.828 35.767 103.42 83.208 37.98 11.004 65.7 45.488 65.7 86.328 0 49.737-41.06 90.021-91.72 90.021h-.32v.294H94.396c-6.682 0-12.328-5.522-12.328-12.099 0-6.544 5.646-12.115 12.328-12.115h104.163c-9.411-8.546-17-19.003-22.115-30.75l-19.68.007c-3.996 0-7.01-2.957-7.01-6.887v-10.138c0-3.922 3.006-6.87 7.01-6.87h13.079a88.563 88.563 0 01-.735-11.463c0-6.74.751-13.316 2.19-19.631zm-60.235 54.99H21.988c-3.995 0-6.985-2.958-6.985-6.888v-10.138c0-3.922 2.99-6.87 6.985-6.87h88.747c3.995 0 7.01 2.948 7.01 6.87v10.138c.318 3.62-3.015 6.887-6.684 6.887z"/>
 </svg>`;
+
+// Self-contained spinner CSS (the modal renders outside SiteToolsPanel).
+const MODAL_CSS = `
+  @keyframes cws-modal-spin { to { transform: rotate(360deg); } }
+  .cws-modal-spinner {
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    border: 2px solid rgba(81,187,123,0.2);
+    border-top-color: #51bb7b;
+    border-radius: 50%;
+    animation: cws-modal-spin 0.7s linear infinite;
+    flex-shrink: 0;
+  }
+`;
 
 // ---- Styles ----
 
@@ -248,84 +336,126 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    background: 'rgba(0, 0, 0, 0.65)',
-    backdropFilter: 'blur(2px)',
+    background: 'rgba(0, 0, 0, 0.7)',
+    backdropFilter: 'blur(3px)',
+  },
+  stack: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'center',
+    gap: 14,
+    width: 460,
+    maxWidth: 'calc(100vw - 40px)',
   },
   modal: {
-    width: 420,
+    width: '100%',
+    boxSizing: 'border-box' as const,
     background: '#1e1f1f',
     borderRadius: 10,
     border: '1px solid rgba(255,255,255,0.1)',
-    padding: '28px 32px',
+    padding: '22px 26px',
     boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
   },
   header: {
     display: 'flex',
     alignItems: 'center',
-    gap: 10,
-    marginBottom: 6,
+    gap: 12,
+    marginBottom: 20,
   },
   cwIcon: {
     display: 'inline-flex',
     flexShrink: 0,
   },
   headerText: {
-    fontSize: 16,
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 2,
+    minWidth: 0,
+  },
+  headerTitle: {
+    fontSize: 15,
     fontWeight: 600,
     color: '#fff',
+    lineHeight: 1.2,
   },
-  appLabel: {
-    fontSize: 13,
+  headerSubtitle: {
+    fontSize: 12,
     color: 'rgba(255,255,255,0.5)',
-    marginBottom: 20,
+    overflow: 'hidden' as const,
+    textOverflow: 'ellipsis' as const,
+    whiteSpace: 'nowrap' as const,
   },
   stepRow: {
     display: 'flex',
     alignItems: 'center',
     gap: 10,
-    marginBottom: 12,
+    marginBottom: 10,
   },
   stepLabel: {
     fontSize: 13,
-    color: 'rgba(255,255,255,0.8)',
+    color: 'rgba(255,255,255,0.85)',
+    flex: 1,
+    overflow: 'hidden' as const,
+    textOverflow: 'ellipsis' as const,
+    whiteSpace: 'nowrap' as const,
+  },
+  percent: {
+    fontSize: 12,
+    fontWeight: 600,
+    color: '#51bb7b',
+    fontVariantNumeric: 'tabular-nums' as const,
+    flexShrink: 0,
   },
   progressTrack: {
-    height: 4,
-    borderRadius: 2,
-    background: 'rgba(255,255,255,0.1)',
-    marginBottom: 10,
+    height: 8,
+    borderRadius: 0,
+    background: 'rgba(255,255,255,0.06)',
+    border: '1px solid rgba(255,255,255,0.08)',
     overflow: 'hidden',
+    marginBottom: 8,
   },
   progressFill: {
     height: '100%',
-    borderRadius: 2,
-    background: '#51bb7b',
+    background: 'linear-gradient(90deg, #51bb7b 0%, #74d79a 100%)',
     transition: 'width 0.3s ease',
+  },
+  infoRow: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    minHeight: 16,
   },
   detail: {
     fontSize: 11,
-    color: 'rgba(255,255,255,0.4)',
-    marginBottom: 8,
+    color: 'rgba(255,255,255,0.45)',
+    flex: 1,
+    overflow: 'hidden' as const,
+    textOverflow: 'ellipsis' as const,
+    whiteSpace: 'nowrap' as const,
   },
-  warning: {
+  detailOnly: {
     fontSize: 11,
-    color: 'rgba(255,255,255,0.3)',
-    marginTop: 16,
+    color: 'rgba(255,255,255,0.45)',
+    marginTop: 4,
+    marginLeft: 26,
+    lineHeight: 1.5,
+  },
+  bytesText: {
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.7)',
+    fontVariantNumeric: 'tabular-nums' as const,
+    flexShrink: 0,
+  },
+  outsideWarning: {
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.5)',
     textAlign: 'center' as const,
     fontStyle: 'italic',
+    padding: '2px 12px',
   },
-  successMsg: {
-    fontSize: 14,
-    color: '#51bb7b',
-    marginBottom: 20,
-    lineHeight: 1.5,
-  },
-  errorMsg: {
-    fontSize: 13,
-    color: '#d94f4f',
-    marginBottom: 20,
-    lineHeight: 1.5,
-    wordBreak: 'break-word' as const,
+  bannerSlot: {
+    marginBottom: 16,
   },
   dismissBtn: {
     display: 'block',

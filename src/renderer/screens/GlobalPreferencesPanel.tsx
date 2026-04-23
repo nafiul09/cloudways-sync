@@ -9,6 +9,7 @@ import {
   Text,
 } from '@getflywheel/local-components';
 import { ipcClient, IpcCallError } from '../ipcClient';
+import { MaskedEmail } from '../components/MaskedEmail';
 import type { ConnectionStatusPayload } from '../../shared/ipcTypes';
 
 // Root of CloudwaysSync's entry in Local → Preferences. This is the
@@ -89,7 +90,7 @@ export function GlobalPreferencesPanel(): React.ReactElement {
         </Title>
         <div style={styles.row}>
           <Text>
-            Account: <strong>{status.email}</strong>
+            Account: <MaskedEmail email={status.email} bold />
           </Text>
         </div>
         <div style={styles.row}>

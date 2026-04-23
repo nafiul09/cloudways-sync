@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import type { ApiClient } from '../cloudways/ApiClient';
+import { CloudwaysError } from '../cloudways/errors';
 import type { App, Server } from '../cloudways/schemas';
 import { RemoteError } from '../remote/errors';
 import { SftpClient, type SftpConnectConfig } from '../remote/SftpClient';
@@ -10,12 +11,13 @@ import { SshClient, type SshConnectConfig } from '../remote/SshClient';
 import {
   buildWpCommand,
   cloudwaysAppPublicPath,
+  detectBreezePlugin,
   shellQuote,
   wpCli,
   wpOptionGet,
 } from '../remote/wpCli';
 import type { JobProgressEvent, RunJobResponse, UndoRecord } from '../../shared/ipcTypes';
-import { shouldSkipPushStep, tarExcludePatternsForIncludes } from './Selective';
+import { selectedWpContentSubdirs, shouldSkipPushStep, tarExcludePatternsForIncludes } from './Selective';
 import { sweepStaleJobs } from './cleanup';
 import type { PullMetadata, PushPlan } from './types';
 import type { UndoLedger } from './UndoLedger';
@@ -109,12 +111,35 @@ export class PushOrchestrator {
 
       // Step 2: Remote backup for safety (undo support)
       await this.step(jobId, 'remote-backup', async () => {
-        const operationId = await this.client.triggerAppBackup(server.id, app.id);
-        await this.client.waitForOperation(operationId, {
-          onTick: (op) => {
-            this.progress(jobId, 'remote-backup', 'running', op.message || String(op.status));
-          },
-        });
+        const MAX_BACKUP_ATTEMPTS = 3;
+        const RETRY_DELAY_MS = 15_000;
+        for (let attempt = 1; attempt <= MAX_BACKUP_ATTEMPTS; attempt++) {
+          try {
+            const operationId = await this.client.triggerAppBackup(server.id, app.id);
+            await this.client.waitForOperation(operationId, {
+              onTick: (op) => {
+                const detail = op.message || (op.status != null ? String(op.status) : '');
+                if (detail) this.progress(jobId, 'remote-backup', 'running', detail);
+              },
+            });
+            return; // backup succeeded
+          } catch (err) {
+            if (!(err instanceof CloudwaysError && err.status === 422)) throw err;
+
+            const isOperationBusy = /operation.*in progress/i.test(err.message);
+            if (isOperationBusy && attempt < MAX_BACKUP_ATTEMPTS) {
+              this.progress(
+                jobId, 'remote-backup', 'running',
+                `Server busy — retrying in ${Math.round(RETRY_DELAY_MS / 1000)}s (attempt ${attempt}/${MAX_BACKUP_ATTEMPTS})…`,
+              );
+              await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+              continue;
+            }
+            this.progress(jobId, 'remote-backup', 'running', isOperationBusy
+              ? 'Server busy — proceeding without new backup'
+              : 'Skipped — recent backup exists');
+          }
+        }
       });
 
       const appPublicPath = cloudwaysAppPublicPath(app.sys_user as string);
@@ -212,7 +237,22 @@ export class PushOrchestrator {
             }),
           );
 
-          // Extract on server — replace remote wp-content
+          // Replace ONLY the selected wp-content subdirs on the remote.
+          // Without this step, tar-extract just overlays files, so any
+          // files the user deleted locally (e.g. an uninstalled plugin)
+          // would linger on the remote. Unselected subdirs (uploads,
+          // languages, etc. that the user didn't tick) remain untouched.
+          const subdirs = selectedWpContentSubdirs(plan.includes);
+          if (subdirs.length > 0) {
+            const remoteWpContent = `${appPublicPath}/wp-content`;
+            const rmCmd = subdirs
+              .map((sub) => `rm -rf ${shellQuote(`${remoteWpContent}/${sub}`)}`)
+              .join(' && ');
+            this.progress(jobId, 'upload-content', 'running', 'Clearing selected wp-content subdirs on server…');
+            await execChecked(ssh as SshClient, rmCmd);
+          }
+
+          // Extract archive — recreates the selected subdirs we just removed.
           this.progress(jobId, 'upload-content', 'running', 'Extracting archive on server…');
           await execChecked(
             ssh as SshClient,
@@ -262,6 +302,15 @@ export class PushOrchestrator {
         await this.client.purgeVarnish(server.id);
       });
 
+      // Step 10b: Re-activate Breeze if requested
+      if (plan.reactivateBreeze) {
+        await this.step(jobId, 'breeze-reactivate', async () => {
+          await wpCli({ ssh: ssh as SshClient, appPublicPath }, ['plugin', 'activate', 'breeze']);
+        });
+      } else {
+        this.progress(jobId, 'breeze-reactivate', 'skipped');
+      }
+
       // Step 11: Cleanup remote temp files
       await this.step(jobId, 'cleanup', async () => {
         await cleanupRemote(ssh, remoteSql, remoteSqlGz, remoteContentTarGz);
@@ -307,7 +356,11 @@ export class PushOrchestrator {
     if (!app) {
       throw new RemoteError('SSH_COMMAND_FAILED', `App ${appId} not found on server.`, { retriable: false });
     }
-    await this.client.ensureAppSshAccess(server.id, app.id);
+    // Skip ensureAppSshAccess — getAppSshAccess returns unreliable
+    // results, causing enableAppSsh to trigger a server operation that
+    // blocks the backup step with 422 "operation in progress." SSH is
+    // already verified during credential creation + smoke test. If SSH
+    // isn't working, the connect step will surface the error.
     let creds = await this.client.getAppCreds(server.id, app.id);
     let primary = creds[0];
 
@@ -415,10 +468,11 @@ function cloudwaysAppRootPath(appSystemUser: string): string {
 }
 
 async function collectMetadata(ssh: SshClient, appPublicPath: string): Promise<PullMetadata> {
-  const [homeUrl, siteUrl, wpVersion] = await Promise.all([
+  const [homeUrl, siteUrl, wpVersion, breezeStatus] = await Promise.all([
     wpOptionGet({ ssh, appPublicPath }, 'home'),
     wpOptionGet({ ssh, appPublicPath }, 'siteurl'),
     wpCli({ ssh, appPublicPath }, ['core', 'version']).then((r) => r.stdout.trim()).catch(() => undefined),
+    detectBreezePlugin({ ssh, appPublicPath }),
   ]);
   const multisiteCheck = await ssh.exec(
     buildWpCommand(appPublicPath, ['core', 'is-installed', '--network']),
@@ -428,6 +482,7 @@ async function collectMetadata(ssh: SshClient, appPublicPath: string): Promise<P
     siteUrl,
     wpVersion,
     isMultisite: multisiteCheck.code === 0,
+    breezeStatus,
   };
 }
 
