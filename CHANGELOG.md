@@ -5,89 +5,95 @@ All notable changes to CloudwaysSync will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## 0.1.0 — 2026-04-23
+## 0.1.0 — 2026-04-23 (alpha)
+
+First public alpha release. Ships the full Cloudways ↔ Local sync
+loop end-to-end: connect to Cloudways, browse servers/apps, pull a
+remote WordPress site into Local, push local changes back, and undo
+a push when something goes wrong.
 
 ### Added
-- Cloudways API client with OAuth, retry, and rate-limiting
-- Secure credential storage via Electron safeStorage
-- Server and app browser with credential display
-- SSH and SFTP clients with timeout and stall detection
-- Pull: clone any Cloudways WordPress app to a new Local site
-- Selective sync: checkboxes for database, uploads, plugins, themes, mu-plugins, languages
-- Archive-based transfer (tar on server, single download, local extract)
-- Push Mode A: push Local site changes to an existing Cloudways app
-- Push Mode B infrastructure: create new Cloudways app from Local site
-- Undo push: restore remote site to pre-push backup
-- Per-site menu integration ("Push to Cloudways", "Pull from Cloudways")
-- Live progress UI with step labels and percentage display
-- Safety backups before every push operation
-- Humanized error messages for all error codes (errorMessages.ts)
-- Build script for Add-on Library zip distribution (scripts/build-addon-zip.mjs)
 
-## [Unreleased]
+#### Cloudways API + credentials
+- Cloudways v2 API client with OAuth token cache, 401→re-auth replay,
+  429 Retry-After handling, and 5xx/network retry with jittered
+  exponential backoff.
+- Operation poller (`waitForOperation`) for long-running Cloudways
+  jobs (backups, app create/delete).
+- `CredentialStore` persists the API key encrypted via Electron
+  `safeStorage`; refuses to write when the OS keychain is unavailable
+  rather than silently falling back to plaintext.
+- `ConnectionService` owns the single `ApiClient` instance, hydrates
+  saved creds on startup, and verifies creds via OAuth before
+  persisting on connect.
+- Per-app SSH/SFTP credential creation with auto-retry + smoke test.
 
-### Added
-- Phase 0 scaffold: TypeScript + Vite + oxlint + vitest toolchain.
-- Placeholder per-site "CloudwaysSync" tab under Local's Tools view
-  (via `siteInfoToolsItem` hook — the `sidebar::items` hook from the
-  plan's research doc does not exist in Local v10).
-- Cross-platform link/unlink scripts for Local's add-ons directory.
-- GitHub Actions CI (Ubuntu + macOS + Windows; Node 20 + 22).
-- Phase 1 Cloudways API client:
-  - Tagged `CloudwaysError` with 9 error codes + factory helpers.
-  - zod schemas for OAuth, servers/apps, app credentials, and
-    operations (with `z.coerce.number()` for Cloudways' stringly-typed
-    ids).
-  - `retry()` utility with exponential backoff + jittered delays and
-    a caller-provided `shouldRetry` predicate.
-  - `ApiClient` with in-memory OAuth token cache (~55min TTL with
-    skew), 401→re-auth-once replay, 429 Retry-After honouring,
-    5xx/network retry with backoff, and an operation poller
-    (`waitForOperation`).
-  - 16 unit tests using a mocked `undici.request` cover OAuth reuse,
-    401 replay, 5xx retries, 429 Retry-After, 4xx non-retry, schema
-    coercion/validation, operation polling success/failure/timeout,
-    and network errors.
-  - `scripts/smoke-cloudways.mjs` (via `npm run smoke:cloudways`)
-    hits the real Cloudways API using `.env.local` to verify live
-    servers + apps listing.
-- Phase 2 credentials + Connect flow:
-  - `CredentialStore` persists an encrypted API key via Electron
-    `safeStorage` + plain JSON metadata under
-    `<userData>/cloudwayssync/`. Refuses to write when the OS
-    keychain is unavailable rather than silently falling back to
-    plaintext.
-  - `ConnectionService` owns the single `ApiClient` instance, hydrates
-    saved creds on startup, and verifies creds via OAuth before
-    persisting on connect.
-  - IPC handlers (`cs:connect`, `cs:disconnect`, `cs:getConnection`)
-    registered through Local's `addIpcAsyncListener` bridge with a
-    shared `IpcResult<T>` response shape + `serializeError()` for
-    consistent renderer-side error handling.
-  - Renderer `ipcClient` + `IpcCallError` thin wrapper around Local's
-    `ipcAsync`.
-  - `ConnectPanel` with email + API-key form, connect/disconnect, and
-    error surface; mounted inside `SiteToolsPanel` under the per-site
-    CloudwaysSync tab.
-  - 19 new unit tests for credentials round-trip/encryption
-    refusal/corrupt-meta handling, ConnectionService hydrate +
-    connect + disconnect, and IPC handler input validation + error
-    serialization.
+#### Sync — pull
+- Pull any Cloudways WordPress app into a new or existing Local site.
+- Archive-based transfer: tar on server, single SFTP download, local
+  extract — avoids the slow per-file SFTP mirror path.
+- Pre-pull Cloudways app backup with retry (handles "operation in
+  progress" 422s by waiting + retrying).
+- Remote DB export + gzip, download, Local import, and `wp
+  search-replace` URL rewrite.
+- Selective pull: per-subdir checkboxes (database, uploads, plugins,
+  themes, mu-plugins, languages) — only the selected subdirs are
+  replaced on Local; unselected subdirs are left untouched.
+- Breeze caching plugin handling: excluded from the archive and
+  deactivated on Local after import (Breeze requires Cloudways
+  server-side configuration and fatals in Local).
+- Live progress UI with step labels, bytes transferred / total, and
+  percentage.
+- Manifest (`cloudsync-export.json`) written into every pulled site.
 
-### Changed
-- Made Cloudways API v2 routing explicit with exported base URL and
-  endpoint constants, plus a regression test that verifies every
-  `ApiClient` request targets `/api/v2`.
-- Updated the implementation plan's Cloudways endpoint table to match
-  the v2 paths used by the client.
-- Phase 5 pull foundation:
-  - Added `cs:planPull`, `cs:runJob`, and `cs:cancelJob` IPC handlers.
-  - Added `PullOrchestrator` for the full non-selective pull sequence:
-    Cloudways app backup, SSH metadata, remote DB export/gzip, SFTP DB
-    and `wp-content` download, manifest writing, and Local import.
-  - Added `LocalSiteImporter` using Local's `addSite`,
-    `siteProcessManager`, and `wpCli` services.
-  - Added a WordPress app "Pull to Local" action in the fleet detail
-    pane.
-  - Added an orchestrator unit test covering the Phase 5 pull sequence
-    with mocked Cloudways, SSH/SFTP, and Local importer boundaries.
+#### Sync — push
+- Push Mode A: push a Local site into an existing linked Cloudways
+  app.
+- Push Mode B infrastructure: create a new Cloudways app from a Local
+  site.
+- Pre-push remote backup with the same retry strategy as pull.
+- Selective push: only the selected wp-content subdirs are replaced
+  on the remote; unselected subdirs on the remote stay untouched,
+  and deletions inside selected subdirs propagate correctly.
+- Optional re-activation of Breeze on the remote after push (UI
+  notice + checkbox when Breeze is detected).
+- Undo push: restore the remote site to the pre-push backup with one
+  click.
+
+#### UI
+- `CloudwaysSync` tab under Local's per-site Tools view.
+- Full-page CloudwaysSync dashboard mounted in Local's overlay portal
+  from a sidebar nav-rail icon (tints match Local's own icons).
+- Site-list icon injection to flag sites linked to a Cloudways app.
+- Per-site action menu ("Push to Cloudways", "Pull from Cloudways",
+  "Open on Cloudways").
+- Global sync modal (portal) that blocks UI during a sync, shows
+  step + progress + bytes, and surfaces success / failure with a
+  Close button.
+- `MaskedEmail` component: masks the connected email
+  (`hos***@***iko.com`) with an eye-icon toggle for screen-share /
+  recording privacy; applied to every "Connected as ..." banner.
+- Selective-sync panel with grouped "wp-content (all)" toggle and
+  per-subdir checkboxes.
+- Humanized error messages for every tagged error code.
+
+#### Infrastructure
+- Monorepo scaffold: TypeScript, Vite for renderer, `tsc` for main,
+  oxlint, vitest.
+- Cross-platform link/unlink scripts for Local's add-ons directory
+  (`npm run link` / `npm run unlink`).
+- `npm run package` builds a distributable zip (`dist/…zip`) for the
+  Local Add-on Library.
+- GitHub Actions CI across Ubuntu + macOS + Windows, Node 20 + 22
+  (lint, typecheck, test, build).
+- `npm run smoke:cloudways` hits the real Cloudways API via
+  `.env.local` for a live servers/apps listing sanity check.
+
+### Known limitations
+- Push Mode B (create new Cloudways app from Local) ships the
+  infrastructure but is not yet surfaced in the UI.
+- Multisite sites are blocked at plan time (no multisite support in
+  this alpha).
+- No automated background scheduling — every sync is user-initiated.
+- Not yet submitted to the Local Add-on Library; install via the
+  `dist` zip or `npm run link` for now.
