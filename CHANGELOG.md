@@ -82,8 +82,6 @@ a push when something goes wrong.
   oxlint, vitest.
 - Cross-platform link/unlink scripts for Local's add-ons directory
   (`npm run link` / `npm run unlink`).
-- `npm run package` builds a distributable zip (`dist/…zip`) for the
-  Local Add-on Library.
 - GitHub Actions CI across Ubuntu + macOS + Windows, Node 20 + 22
   (lint, typecheck, test, build).
 - `npm run smoke:cloudways` hits the real Cloudways API via
@@ -95,5 +93,5 @@ a push when something goes wrong.
 - Multisite sites are blocked at plan time (no multisite support in
   this alpha).
 - No automated background scheduling — every sync is user-initiated.
-- Not yet submitted to the Local Add-on Library; install via the
-  `dist` zip or `npm run link` for now.
+- Not yet submitted to the Local Add-on Library; install is
+  developer-only (clone + `npm install` + `npm run link`) for now.
