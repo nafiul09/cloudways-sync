@@ -79,3 +79,25 @@ export async function wpOptionGet(ctx: WpCliContext, name: string): Promise<stri
   const res = await wpCli(ctx, ['option', 'get', name]);
   return res.stdout.trimEnd();
 }
+
+/** Detect the Breeze caching plugin (Cloudways server-managed). */
+export async function detectBreezePlugin(
+  ctx: WpCliContext,
+): Promise<{ installed: boolean; active: boolean; version?: string }> {
+  try {
+    const plugins = await wpCliJson<Array<{ name: string; status: string; version: string }>>(
+      ctx,
+      ['plugin', 'list', '--format=json'],
+    );
+    if (!Array.isArray(plugins)) return { installed: false, active: false };
+    const breeze = plugins.find((p) => p.name === 'breeze');
+    if (!breeze) return { installed: false, active: false };
+    return {
+      installed: true,
+      active: breeze.status === 'active',
+      version: breeze.version,
+    };
+  } catch {
+    return { installed: false, active: false };
+  }
+}

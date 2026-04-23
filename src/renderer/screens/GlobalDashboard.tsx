@@ -11,6 +11,7 @@ import {
   Divider,
 } from '@getflywheel/local-components';
 import { ipcClient, IpcCallError } from '../ipcClient';
+import { MaskedEmail } from '../components/MaskedEmail';
 import type { ConnectionStatusPayload } from '../../shared/ipcTypes';
 import { FleetBrowser } from './fleet/FleetBrowser';
 
@@ -100,7 +101,7 @@ function ConnectedView({
       <Banner variant="success" className="cws-connected-banner">
         <div style={styles.bannerBody}>
           <span>
-            Connected as <strong>{status.email}</strong>
+            Connected as <MaskedEmail email={status.email} bold />
           </span>
           <button
             type="button"

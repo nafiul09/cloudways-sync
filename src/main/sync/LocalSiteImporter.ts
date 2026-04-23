@@ -37,14 +37,42 @@ export class LocalSiteImporter implements SiteImporter {
       ? await this.resolveExistingSite(input.existingSiteId)
       : await this.createNewSite(input);
 
-    await this.services.siteProcessManager.start(site);
-    await this.services.siteDatabase.waitForDB(site);
+    // Stop the site before replacing wp-content — running processes
+    // (PHP-FPM, nginx) hold file handles open, which causes ENOTEMPTY
+    // errors when we try to rm the directory tree.
+    if (input.existingSiteId) {
+      try { await this.services.siteProcessManager.stop(site); } catch { /* may not be running */ }
+    }
 
     if (input.importWpContent) {
       const targetWpContent = path.join(site.paths.webRoot, 'wp-content');
-      await fs.promises.rm(targetWpContent, { recursive: true, force: true });
-      await fs.promises.cp(input.wpContentPath, targetWpContent, { recursive: true });
+      await fs.promises.mkdir(targetWpContent, { recursive: true });
+
+      if (input.wpContentSubdirs && input.wpContentSubdirs.length > 0) {
+        // Per-subdir replace: only touch the dirs the user selected
+        // (e.g. plugins + themes). Unselected subdirs (uploads,
+        // mu-plugins, languages, ...) stay as-is on the Local site.
+        for (const sub of input.wpContentSubdirs) {
+          const dest = path.join(targetWpContent, sub);
+          const src = path.join(input.wpContentPath, sub);
+          await fs.promises.rm(dest, { recursive: true, force: true });
+          try {
+            await fs.promises.access(src);
+            await fs.promises.cp(src, dest, { recursive: true });
+          } catch {
+            // Source subdir missing from archive — user selected it
+            // but the remote didn't have it. Leave dest removed.
+          }
+        }
+      } else {
+        // Legacy / full replace path (back-compat when no subdir list).
+        await fs.promises.rm(targetWpContent, { recursive: true, force: true });
+        await fs.promises.cp(input.wpContentPath, targetWpContent, { recursive: true });
+      }
     }
+
+    await this.services.siteProcessManager.start(site);
+    await this.services.siteDatabase.waitForDB(site);
 
     const localUrl = site.url || `http://${site.domain}.local`;
 
@@ -61,6 +89,12 @@ export class LocalSiteImporter implements SiteImporter {
 
     await this.services.wpCli.run(site, ['cache', 'flush'], { ignoreErrors: true });
     await this.services.wpCli.run(site, ['rewrite', 'flush'], { ignoreErrors: true });
+
+    // Deactivate Breeze caching plugin if referenced in the DB —
+    // it's a Cloudways server-managed plugin that causes fatal errors
+    // in Local environments. The plugin files are excluded from the
+    // tar, but active_plugins may still reference it.
+    await this.services.wpCli.run(site, ['plugin', 'deactivate', 'breeze'], { ignoreErrors: true });
 
     return {
       localSiteId: site.id,

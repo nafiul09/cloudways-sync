@@ -38,6 +38,7 @@ export const PUSH_STEPS: Array<Omit<SyncStep, 'status'>> = [
   { id: 'remote-db-import', label: 'Import database on server' },
   { id: 'search-replace', label: 'Rewrite URLs on server' },
   { id: 'cache-flush', label: 'Flush caches' },
+  { id: 'breeze-reactivate', label: 'Re-activate Breeze plugin' },
   { id: 'cleanup', label: 'Clean up temporary files' },
 ];
 
@@ -81,6 +82,7 @@ export class JobStore {
       steps: PUSH_STEPS.map((step) => ({ ...step, status: 'pending' })),
       createdAt: now,
       newAppLabel: req.newAppLabel,
+      reactivateBreeze: req.reactivateBreeze,
     };
     this.pushPlans.set(plan.id, plan);
     return plan;
