@@ -261,7 +261,7 @@ export function SiteToolsPanel({ site }: { site: Site }): React.ReactElement {
       <style>{CWS_CSS}{LOCAL_FLY_SELECT_CSS}</style>
       <header style={styles.header}>
         <Title size="l" tag="h1">
-          CloudwaysSync
+          Cloudways Sync
         </Title>
         <Text size="caption">Site: {site?.name ?? 'unknown'}</Text>
       </header>
@@ -955,10 +955,10 @@ function UnlinkedState({
 function DisconnectedState(): React.ReactElement {
   return (
     <section>
-      <Banner variant="warning">CloudwaysSync isn&rsquo;t connected to a Cloudways account yet.</Banner>
+      <Banner variant="warning">Cloudways Sync isn&rsquo;t connected to a Cloudways account yet.</Banner>
       <div style={styles.row}>
         <Text>
-          Click the <strong>CloudwaysSync</strong> icon in Local&rsquo;s sidebar to connect your
+          Click the <strong>Cloudways Sync</strong> icon in Local&rsquo;s sidebar to connect your
           Cloudways API key.
         </Text>
       </div>

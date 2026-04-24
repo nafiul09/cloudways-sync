@@ -1,4 +1,4 @@
-// Human-readable error messages for the CloudwaysSync UI.
+// Human-readable error messages for the Cloudways Sync UI.
 //
 // Every error thrown by the main process carries a stable `code` string
 // (see `cloudways/errors.ts` and `remote/errors.ts`). This module maps

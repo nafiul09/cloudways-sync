@@ -1,4 +1,4 @@
-// Runtime schemas for every Cloudways API response CloudwaysSync
+// Runtime schemas for every Cloudways API response Cloudways Sync
 // consumes. Validated with zod at the ApiClient boundary so the rest
 // of the code can work with fully-typed structures.
 //

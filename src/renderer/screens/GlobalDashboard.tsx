@@ -15,7 +15,7 @@ import { MaskedEmail } from '../components/MaskedEmail';
 import type { ConnectionStatusPayload } from '../../shared/ipcTypes';
 import { FleetBrowser } from './fleet/FleetBrowser';
 
-// Full-page CloudwaysSync dashboard, mounted in the overlay portal
+// Full-page Cloudways Sync dashboard, mounted in the overlay portal
 // when the user clicks the sidebar icon. Layout mirrors Local's own
 // site-info pane: a TitleBar across the top, then a content body
 // with cards and form rows.
@@ -45,7 +45,7 @@ export function GlobalDashboard(): React.ReactElement {
           XL title, short caption directly below, then a 2px Divider. */}
       <header style={styles.header}>
         <Title size="xl" tag="h1" style={styles.headerTitle}>
-          CloudwaysSync
+          Cloudways Sync
         </Title>
         <Text size="caption" style={styles.headerSub}>
           One-click sync between Cloudways apps and your Local sites.

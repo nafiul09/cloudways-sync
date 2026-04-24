@@ -60,7 +60,7 @@ export class ConnectionService {
    */
   requireClient(): ApiClient {
     if (!this.client) {
-      throw new CloudwaysError('AUTH_INVALID', 'Not connected to Cloudways. Connect from the CloudwaysSync panel first.', {
+      throw new CloudwaysError('AUTH_INVALID', 'Not connected to Cloudways. Connect from the Cloudways Sync panel first.', {
         retriable: false,
       });
     }

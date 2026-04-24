@@ -1,9 +1,9 @@
 {
   "name": "local-addon-cloudwayssync",
-  "productName": "CloudwaysSync",
+  "productName": "Cloudways Sync",
   "version": "0.1.0",
   "description": "Clone any Cloudways app to Local in one click. Push back when ready.",
-  "author": "CloudwaysSync contributors",
+  "author": "Cloudways Sync contributors",
   "license": "MIT",
   "keywords": [
     "local-addon"

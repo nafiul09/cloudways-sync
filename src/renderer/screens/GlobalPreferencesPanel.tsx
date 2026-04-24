@@ -12,7 +12,7 @@ import { ipcClient, IpcCallError } from '../ipcClient';
 import { MaskedEmail } from '../components/MaskedEmail';
 import type { ConnectionStatusPayload } from '../../shared/ipcTypes';
 
-// Root of CloudwaysSync's entry in Local → Preferences. This is the
+// Root of Cloudways Sync's entry in Local → Preferences. This is the
 // *global* connect-to-Cloudways surface — once connected here, every
 // site's per-site Tools tab can map to a Cloudways app without
 // re-entering creds.
@@ -117,7 +117,7 @@ export function GlobalPreferencesPanel(): React.ReactElement {
       </Title>
       <div style={styles.row}>
         <Text>
-          Create an API key in Cloudways → Account → API. CloudwaysSync stores it encrypted in your
+          Create an API key in Cloudways → Account → API. Cloudways Sync stores it encrypted in your
           OS keychain — it never leaves this machine. Once connected here, every Local site can map
           to a Cloudways app from its own Tools tab.
         </Text>

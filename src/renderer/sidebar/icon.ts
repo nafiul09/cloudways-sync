@@ -1,4 +1,4 @@
-// SVG markup for the CloudwaysSync nav-rail icon.
+// SVG markup for the Cloudways Sync nav-rail icon.
 //
 // Uses the Cloudways brand glyph (stacked horizontal bars with a
 // cloud silhouette) but rendered as a monochrome silhouette: the

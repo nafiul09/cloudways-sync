@@ -16,7 +16,7 @@ type SiteToolsItem = {
 // Registers every renderer-side hook exactly once.
 //
 // Local v10 exposes three surfaces we care about:
-//   - `preferencesMenuItems`   → global CloudwaysSync tab in Local's
+//   - `preferencesMenuItems`   → global Cloudways Sync tab in Local's
 //     Preferences. Account-level "connect to Cloudways" lives here.
 //   - `siteInfoToolsItem`      → per-site Tools tab. Surfaces site
 //     status + (Phase 3+) the Cloudways-app mapping and pull/push.
@@ -30,7 +30,7 @@ export function registerHooks(context: AddonRendererContext): void {
       ...items,
       {
         path: '/cloudwayssync',
-        menuItem: 'CloudwaysSync',
+        menuItem: 'Cloudways Sync',
         render: ({ site }: { site: Site }) => <SiteToolsPanel site={site} />,
       },
     ];
@@ -53,7 +53,7 @@ export function registerHooks(context: AddonRendererContext): void {
       ...items,
       {
         path: 'cloudwayssync',
-        displayName: 'CloudwaysSync',
+        displayName: 'Cloudways Sync',
         sections,
         // The panel drives its own connect/disconnect — nothing to
         // apply in a batch. Local still renders the Apply button;

@@ -551,7 +551,7 @@ function AppDetailView({
       {!detail.isWordPress && (
         <div style={styles.banner}>
           <Banner variant="warning">
-            This app is <strong>{detail.application}</strong>, not WordPress. CloudwaysSync only syncs WordPress apps
+            This app is <strong>{detail.application}</strong>, not WordPress. Cloudways Sync only syncs WordPress apps
             in v1.
           </Banner>
         </div>
@@ -709,7 +709,7 @@ function CredentialsMissingNotice({
       <div>
         <Text style={styles.credentialsTitle}>SSH/SFTP access is missing for this app</Text>
         <Text size="caption" style={styles.credentialsCopy}>
-          CloudwaysSync needs app-level SSH/SFTP credentials and SSH shell access before it can test, pull, or push this WordPress site.
+          Cloudways Sync needs app-level SSH/SFTP credentials and SSH shell access before it can test, pull, or push this WordPress site.
         </Text>
       </div>
       <Button onClick={onCreate} disabled={busy}>
