@@ -1,4 +1,4 @@
-# CloudwaysSync for Local
+# Cloudways Sync for Local
 
 > Cloudways ↔ Local, one click.
 
@@ -53,7 +53,7 @@ npm run link   # copies into Local's add-ons directory
 
 Then **fully quit Local** (Cmd+Q / Alt+F4 — not just close the window)
 and reopen. In Local, open any site's Tools tab and click
-**CloudwaysSync**, or click the CloudwaysSync icon in Local's sidebar,
+**Cloudways Sync**, or click the Cloudways Sync icon in Local's sidebar,
 and paste your Cloudways email + API key.
 
 `npm run unlink` removes it again.
@@ -84,7 +84,7 @@ npm test
 
 After `npm run link`, **fully quit Local** (Cmd+Q, not just close the
 window) and reopen. Then `Settings → Add-ons → Installed` — you
-should see CloudwaysSync listed.
+should see Cloudways Sync listed.
 
 ## Project layout
 

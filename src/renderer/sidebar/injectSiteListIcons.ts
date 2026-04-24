@@ -1,5 +1,5 @@
 // Injects a small Cloudways icon next to site names in Local's sidebar
-// site list for sites that are linked to a Cloudways app via CloudwaysSync.
+// site list for sites that are linked to a Cloudways app via Cloudways Sync.
 //
 // Uses a MutationObserver to handle dynamic site list changes (accordion
 // expand/collapse, drag-reorder, site creation/deletion).

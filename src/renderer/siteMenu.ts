@@ -2,7 +2,7 @@
 //
 // Local's `siteInfoMoreMenu` filter passes an array of Electron-style
 // MenuItemConstructorOptions and the current Site. We append
-// CloudwaysSync actions so the user can push/pull/open without
+// Cloudways Sync actions so the user can push/pull/open without
 // navigating to the Tools tab first.
 //
 // Menu shape follows Electron's MenuItemConstructorOptions (label,
@@ -50,7 +50,7 @@ async function fetchMapping(siteId: string): Promise<SiteMapping | null> {
 }
 
 /**
- * Build the CloudwaysSync menu items for a given site and (optional)
+ * Build the Cloudways Sync menu items for a given site and (optional)
  * mapping. Exported for testing; the filter callback calls this after
  * resolving the mapping.
  */
@@ -67,7 +67,7 @@ export function buildMenuItems(
       click: () => {
         // Local's internal routing doesn't expose a public navigation
         // API. For v0.1.0, open the site detail page; the user can
-        // navigate to Tools → CloudwaysSync from there.
+        // navigate to Tools → Cloudways Sync from there.
       },
     });
 
@@ -106,7 +106,7 @@ export function buildMenuItems(
  * The filter callback for `siteInfoMoreMenu`. Local calls this
  * synchronously, so we can't await the mapping fetch inline.
  *
- * Strategy: we append a placeholder "CloudwaysSync" disabled item
+ * Strategy: we append a placeholder "Cloudways Sync" disabled item
  * immediately (so the filter returns synchronously), then on the next
  * menu open the cached mapping will be available.
  *

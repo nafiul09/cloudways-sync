@@ -423,7 +423,7 @@ export class ApiClient {
         server_id: serverId,
         tab: 'ssh',
         ip,
-        label: label ?? 'CloudwaysSync',
+        label: label ?? 'Cloudways Sync',
       },
       // This endpoint just returns { status: true }; we don't care about shape.
       schema: z.unknown(),

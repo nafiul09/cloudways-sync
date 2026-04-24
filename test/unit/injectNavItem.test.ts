@@ -47,7 +47,7 @@ describe('injectNavItem', () => {
     const onClick = vi.fn();
 
     const handle = injectNavItem({
-      label: 'CloudwaysSync',
+      label: 'Cloudways Sync',
       iconSvg: '<svg data-new="cws"></svg>',
       onClick,
     });
@@ -56,7 +56,7 @@ describe('injectNavItem', () => {
     expect(marker).not.toBeNull();
 
     const link = marker!.querySelector('a');
-    expect(link?.getAttribute('aria-label')).toBe('CloudwaysSync');
+    expect(link?.getAttribute('aria-label')).toBe('Cloudways Sync');
     expect(link?.getAttribute('href')).toBe('#');
 
     const svg = link?.querySelector('svg');
@@ -66,7 +66,7 @@ describe('injectNavItem', () => {
 
     // Tooltip text swapped.
     const tooltip = marker!.querySelector('[aria-hidden="true"]');
-    expect(tooltip?.textContent).toBe('CloudwaysSync');
+    expect(tooltip?.textContent).toBe('Cloudways Sync');
 
     // Inserted directly before the Support wrapper.
     const supportWrapper = sidebar.querySelector('a[href^="#/main/support"]')!.closest('div')!;
@@ -82,7 +82,7 @@ describe('injectNavItem', () => {
     const onClick = vi.fn();
 
     const handle = injectNavItem({
-      label: 'CloudwaysSync',
+      label: 'Cloudways Sync',
       iconSvg: '<svg></svg>',
       onClick,
     });
@@ -102,7 +102,7 @@ describe('injectNavItem', () => {
     document.body.appendChild(sidebar);
 
     const handle = injectNavItem({
-      label: 'CloudwaysSync',
+      label: 'Cloudways Sync',
       iconSvg: '<svg></svg>',
       onClick: vi.fn(),
     });
@@ -127,7 +127,7 @@ describe('injectNavItem', () => {
     const onDeactivate = vi.fn();
 
     const handle = injectNavItem({
-      label: 'CloudwaysSync',
+      label: 'Cloudways Sync',
       iconSvg: '<svg></svg>',
       onClick: vi.fn(),
       onDeactivate,
@@ -160,13 +160,13 @@ describe('injectNavItem', () => {
     localSites.setAttribute('aria-current', 'page');
 
     const handle = injectNavItem({
-      label: 'CloudwaysSync',
+      label: 'Cloudways Sync',
       iconSvg: '<svg></svg>',
       onClick: vi.fn(),
       onDeactivate: vi.fn(),
     });
 
-    // Open CloudwaysSync — strips Local Sites's __Active.
+    // Open Cloudways Sync — strips Local Sites's __Active.
     handle.setActive(true);
     expect(localSites.classList.contains('__Active')).toBe(false);
 
@@ -187,16 +187,16 @@ describe('injectNavItem', () => {
     addOns.setAttribute('aria-current', 'page');
 
     const handle = injectNavItem({
-      label: 'CloudwaysSync',
+      label: 'Cloudways Sync',
       iconSvg: '<svg></svg>',
       onClick: vi.fn(),
     });
 
-    // Open CloudwaysSync — Add-ons gets stripped.
+    // Open Cloudways Sync — Add-ons gets stripped.
     handle.setActive(true);
     expect(addOns.classList.contains('__Active')).toBe(false);
 
-    // Close CloudwaysSync by re-clicking our own icon (no other
+    // Close Cloudways Sync by re-clicking our own icon (no other
     // sidebar link was clicked). Add-ons should be re-highlighted.
     handle.setActive(false);
     expect(addOns.classList.contains('__Active')).toBe(true);
@@ -209,8 +209,8 @@ describe('injectNavItem', () => {
     const sidebar = buildSidebarFixture();
     document.body.appendChild(sidebar);
 
-    const h1 = injectNavItem({ label: 'CloudwaysSync', iconSvg: '<svg></svg>', onClick: vi.fn() });
-    const h2 = injectNavItem({ label: 'CloudwaysSync', iconSvg: '<svg></svg>', onClick: vi.fn() });
+    const h1 = injectNavItem({ label: 'Cloudways Sync', iconSvg: '<svg></svg>', onClick: vi.fn() });
+    const h2 = injectNavItem({ label: 'Cloudways Sync', iconSvg: '<svg></svg>', onClick: vi.fn() });
 
     expect(sidebar.querySelectorAll('[data-cloudwayssync-nav]').length).toBe(1);
 
@@ -220,7 +220,7 @@ describe('injectNavItem', () => {
 
   it('waits for #Sidebar via MutationObserver when it appears later', async () => {
     const handle = injectNavItem({
-      label: 'CloudwaysSync',
+      label: 'Cloudways Sync',
       iconSvg: '<svg></svg>',
       onClick: vi.fn(),
     });

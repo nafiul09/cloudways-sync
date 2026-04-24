@@ -61,7 +61,7 @@ async function main() {
   await symlink(repoRoot, linkPath, symlinkType);
 
   console.log(`Linked: ${linkPath} -> ${repoRoot}`);
-  console.log('Now restart Local (or toggle the add-on) to load CloudwaysSync.');
+  console.log('Now restart Local (or toggle the add-on) to load Cloudways Sync.');
 }
 
 main().catch((err) => {

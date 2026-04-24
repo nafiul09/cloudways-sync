@@ -1,7 +1,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom';
 
-// Full-page content overlay for the CloudwaysSync dashboard.
+// Full-page content overlay for the Cloudways Sync dashboard.
 //
 // Positioned fixed to the right of Local's 70px sidebar rail, on top
 // of the main content area. Visibility is driven by explicit

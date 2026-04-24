@@ -1,4 +1,4 @@
-// CloudwaysSync — Local add-on renderer entry.
+// Cloudways Sync — Local add-on renderer entry.
 //
 // 1. Register official hooks (Preferences tab, per-site Tools tab).
 // 2. Progressive enhancement: inject a sidebar icon + overlay panel.
@@ -26,7 +26,7 @@ export default function register(context: AddonRendererContext): void {
     });
 
     const nav = injectNavItem({
-      label: 'CloudwaysSync',
+      label: 'Cloudways Sync',
       iconSvg: CLOUDWAYSSYNC_ICON_SVG,
       onClick: () => {
         if (overlay.visible) {
@@ -41,7 +41,7 @@ export default function register(context: AddonRendererContext): void {
     });
   } catch (err) {
     // eslint-disable-next-line no-console
-    console.warn('[CloudwaysSync] sidebar injection failed — using Preferences entry only.', err);
+    console.warn('[Cloudways Sync] sidebar injection failed — using Preferences entry only.', err);
   }
 
   // Show Cloudways badge on linked sites in the site list.
@@ -49,7 +49,7 @@ export default function register(context: AddonRendererContext): void {
     startSiteListIcons();
   } catch (err) {
     // eslint-disable-next-line no-console
-    console.warn('[CloudwaysSync] site list icon injection failed.', err);
+    console.warn('[Cloudways Sync] site list icon injection failed.', err);
   }
 
   // Global sync progress modal — persists across navigation.

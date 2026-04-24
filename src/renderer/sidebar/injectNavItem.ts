@@ -1,4 +1,4 @@
-// Runtime DOM injection of a CloudwaysSync nav item into Local's
+// Runtime DOM injection of a Cloudways Sync nav item into Local's
 // primary left-rail sidebar.
 //
 // Important: Local v10 does NOT expose an official hook for adding
@@ -68,7 +68,7 @@ export function injectNavItem(opts: InjectNavItemOptions): SidebarInjectionHandl
     handle = doInject(opts);
     if (!handle) return false;
 
-    // Click delegation on #Sidebar: any click on a non-CloudwaysSync
+    // Click delegation on #Sidebar: any click on a non-Cloudways-Sync
     // sidebar link should deactivate our icon. We can't rely on
     // hashchange because re-clicking the *same* Local route doesn't
     // emit one — yet the user expects the visible active state to
@@ -151,7 +151,7 @@ function doInject(opts: InjectNavItemOptions): SidebarInjectionHandle | null {
   const templateWrapper = templateLink?.closest('div');
   if (!templateWrapper || !(templateWrapper instanceof HTMLElement)) {
     // eslint-disable-next-line no-console
-    console.warn('[CloudwaysSync] sidebar template not found — falling back to Preferences entry.');
+    console.warn('[Cloudways Sync] sidebar template not found — falling back to Preferences entry.');
     return null;
   }
 

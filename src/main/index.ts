@@ -1,4 +1,4 @@
-// CloudwaysSync — Local add-on main-process entry.
+// Cloudways Sync — Local add-on main-process entry.
 //
 // Local loads this module and calls the default export once on
 // startup, passing an `AddonMainContext`. All IPC wiring and
@@ -32,7 +32,7 @@ export default function register(context: AddonMainContext): void {
   // UI will see `connected: false` and prompt the user to reconnect.
   connection.hydrate().catch((err) => {
     // eslint-disable-next-line no-console
-    console.warn('[CloudwaysSync] credential hydration failed:', err);
+    console.warn('[Cloudways Sync] credential hydration failed:', err);
   });
 
   registerConnectionHandlers({ addIpcAsyncListener, connection, appPasswords });

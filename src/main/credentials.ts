@@ -48,7 +48,7 @@ const APP_PASSWORDS_FILE = 'app-passwords.bin';
 export class EncryptionUnavailableError extends Error {
   constructor() {
     super(
-      'OS credential store is not available on this machine. CloudwaysSync refuses to persist your API key unencrypted.',
+      'OS credential store is not available on this machine. Cloudways Sync refuses to persist your API key unencrypted.',
     );
     this.name = 'EncryptionUnavailableError';
   }

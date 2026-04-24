@@ -132,7 +132,7 @@ describe('siteInfoMoreMenuFilter', () => {
     // Original items are preserved.
     expect(result[0]!.label).toBe('Open Site');
     expect(result[1]!.label).toBe('Delete');
-    // CloudwaysSync items appended after.
+    // Cloudways Sync items appended after.
     expect(result.length).toBeGreaterThan(2);
     // First CWS item is a separator.
     expect(result[2]!.type).toBe('separator');

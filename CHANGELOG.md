@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to CloudwaysSync will be documented in this file.
+All notable changes to Cloudways Sync will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -61,8 +61,8 @@ a push when something goes wrong.
   click.
 
 #### UI
-- `CloudwaysSync` tab under Local's per-site Tools view.
-- Full-page CloudwaysSync dashboard mounted in Local's overlay portal
+- `Cloudways Sync` tab under Local's per-site Tools view.
+- Full-page Cloudways Sync dashboard mounted in Local's overlay portal
   from a sidebar nav-rail icon (tints match Local's own icons).
 - Site-list icon injection to flag sites linked to a Cloudways app.
 - Per-site action menu ("Push to Cloudways", "Pull from Cloudways",

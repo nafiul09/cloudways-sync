@@ -41,7 +41,7 @@ function isShellAccessDisabled(err: unknown): boolean {
 function shellAccessDisabledError(): RemoteError {
   return new RemoteError(
     'WPCLI_FAILED',
-    'SSH shell access is disabled on Cloudways for this app. CloudwaysSync tried to enable it through the API; wait a minute and retry, or enable SSH access in Cloudways > Application > SSH/SFTP.',
+    'SSH shell access is disabled on Cloudways for this app. Cloudways Sync tried to enable it through the API; wait a minute and retry, or enable SSH access in Cloudways > Application > SSH/SFTP.',
     { retriable: true },
   );
 }
