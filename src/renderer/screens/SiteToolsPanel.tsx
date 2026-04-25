@@ -309,7 +309,6 @@ export function SiteToolsPanel({ site }: { site: Site }): React.ReactElement {
           ) : (
             <SftpLinkedState
               site={site}
-              email={status.connected ? status.email : undefined}
               mapping={mapping}
               onUnlink={() => {
                 const previous = mapping;
@@ -688,16 +687,15 @@ function LinkedState({
 
 function SftpLinkedState({
   site,
-  email,
   mapping,
   onUnlink,
 }: {
   site: Site;
-  email?: string;
   mapping: SftpSiteMapping;
   onUnlink: () => void;
 }): React.ReactElement {
   // SFTP mode supports push + undo + pull (read-only) as of Phase 4.
+  const [mode, setMode] = useState<'push' | 'pull'>('push');
   const [pushBusy, setPushBusy] = useState(false);
   const [pushStep, setPushStep] = useState<SyncStep | undefined>();
   const [pushIncludes, setPushIncludes] = useState<PushIncludes>({ ...DEFAULT_INCLUDES });
@@ -710,6 +708,8 @@ function SftpLinkedState({
   const [pullBusy, setPullBusy] = useState(false);
   const [pullStep, setPullStep] = useState<SyncStep | undefined>();
   const [pullIncludes, setPullIncludes] = useState<PullIncludes>({ ...DEFAULT_INCLUDES });
+
+  const busy = pushBusy || pullBusy || undoBusy;
 
   useEffect(() => {
     const unsubscribe = subscribeJobProgress((event: JobProgressEvent) => {
@@ -819,13 +819,9 @@ function SftpLinkedState({
 
   return (
     <section>
-      {email ? (
-        <Banner variant="success">
-          Connected as <MaskedEmail email={email} bold /> — also linked via SFTP
-        </Banner>
-      ) : (
-        <Banner variant="success">Linked via SFTP — no Cloudways API key needed.</Banner>
-      )}
+      <Banner variant="success">
+        <strong>Linked via SFTP</strong> — this site syncs through SSH/SFTP credentials, not the Cloudways API.
+      </Banner>
       <div style={styles.linkedInfo}>
         <div style={styles.linkedHeader}>
           <Text style={styles.linkedHeading}>Linked via SFTP</Text>
@@ -836,12 +832,30 @@ function SftpLinkedState({
           <Text style={styles.linkedValue}>{mapping.appLabel}</Text>
           <Text size="caption" style={styles.linkedLabel}>Host</Text>
           <Text style={styles.linkedValue}>{mapping.username}@{mapping.host}:{mapping.port}</Text>
-          {mapping.remoteUrl && (
+          {mapping.remoteUrl ? (
             <>
               <Text size="caption" style={styles.linkedLabel}>URL</Text>
-              <Text style={{ ...styles.linkedValue, color: '#51bb7b' }}>{mapping.remoteUrl}</Text>
+              <a
+                href={mapping.remoteUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ ...styles.linkedValue, color: '#51bb7b', textDecoration: 'none' }}
+                onClick={(e) => {
+                  e.preventDefault();
+                  const url = mapping.remoteUrl!;
+                  try {
+                    // eslint-disable-next-line @typescript-eslint/no-var-requires, global-require
+                    const { shell } = require('electron') as { shell: { openExternal: (url: string) => void } };
+                    shell.openExternal(url);
+                  } catch {
+                    window.open(url, '_blank');
+                  }
+                }}
+              >
+                {mapping.remoteUrl}
+              </a>
             </>
-          )}
+          ) : null}
           {mapping.webRoot && (
             <>
               <Text size="caption" style={styles.linkedLabel}>Path</Text>
@@ -851,41 +865,89 @@ function SftpLinkedState({
         </div>
       </div>
 
-      {pushBusy && pushStep?.detail && (
-        <div style={{ marginBottom: 8, fontSize: 11, opacity: 0.65 }}>
-          {pushStep.detail}
-        </div>
-      )}
-      {!pushBusy && !pullBusy && (
-        <SelectivePanel heading="Include in push" includes={pushIncludes} onChange={setPushIncludes} />
-      )}
-      {undoErr && <div style={styles.banner}><Banner variant="error">{undoErr}</Banner></div>}
-      {undoResult && <div style={styles.banner}><Banner variant="success">{undoResult}</Banner></div>}
-
-      <div style={styles.actionBar}>
-        <Button onClick={runPush} disabled={pushBusy || pullBusy || undoBusy}>
-          {pushLabel}
-        </Button>
-        {lastPushUndoId && !pushBusy && !pullBusy && (
-          <Button onClick={runUndo} disabled={undoBusy} style={{ marginLeft: 8 }}>
-            {undoBusy ? 'Restoring…' : 'Undo last push (local snapshot)'}
-          </Button>
-        )}
+      {/* Push / Pull tab switcher */}
+      <div style={styles.tabs}>
+        <button
+          type="button"
+          style={mode === 'push' ? styles.tabActive : styles.tab}
+          onClick={() => setMode('push')}
+          disabled={busy}
+        >
+          Push
+        </button>
+        <button
+          type="button"
+          style={mode === 'pull' ? styles.tabActive : styles.tab}
+          onClick={() => setMode('pull')}
+          disabled={busy}
+        >
+          Pull
+        </button>
       </div>
 
-      {pullBusy && pullStep?.detail && (
-        <div style={{ marginBottom: 8, marginTop: 12, fontSize: 11, opacity: 0.65 }}>
-          {pullStep.detail}
-        </div>
+      {mode === 'push' ? (
+        <>
+          {!pushBusy && (
+            <div style={{ ...styles.banner, marginBottom: 16 }}>
+              <Banner variant="neutral">
+                <strong>SFTP mode can&rsquo;t trigger a Cloudways API backup.</strong>{' '}
+                Cloudways Sync still snapshots the remote <code>wp-content</code> + database
+                into <code>private_html/.cwsync-snapshots/</code> before pushing (and mirrors
+                it locally if &lt;500 MB), so <em>Undo last push</em> can roll back. For full
+                safety, take a manual backup from <strong>Cloudways → Application → Backups</strong>{' '}
+                first.
+              </Banner>
+            </div>
+          )}
+          {pushBusy && pushStep?.detail && (
+            <div style={{ marginBottom: 8, fontSize: 11, opacity: 0.65 }}>
+              {pushStep.detail}
+            </div>
+          )}
+          {!pushBusy && (
+            <SelectivePanel heading="Include in push" includes={pushIncludes} onChange={setPushIncludes} />
+          )}
+          {undoErr && <div style={styles.banner}><Banner variant="error">{undoErr}</Banner></div>}
+          {undoResult && <div style={styles.banner}><Banner variant="success">{undoResult}</Banner></div>}
+          <div style={styles.actionBar}>
+            <Button onClick={runPush} disabled={busy}>
+              {pushLabel}
+            </Button>
+            {lastPushUndoId && !pushBusy && (
+              <Button onClick={runUndo} disabled={undoBusy} style={{ marginLeft: 8 }}>
+                {undoBusy ? 'Restoring…' : 'Undo last push (local snapshot)'}
+              </Button>
+            )}
+          </div>
+        </>
+      ) : (
+        <>
+          {!pullBusy && (
+            <div style={{ ...styles.banner, marginBottom: 16 }}>
+              <Banner variant="neutral">
+                <strong>Pulls overwrite your Local site.</strong> The selected{' '}
+                <code>wp-content</code> subdirs and database will be replaced from the remote.
+                Cloudways stays untouched (pulls are read-only on the server). If you have
+                unsaved local changes, export the site first via{' '}
+                <strong>Local → right-click site → Export…</strong>.
+              </Banner>
+            </div>
+          )}
+          {pullBusy && pullStep?.detail && (
+            <div style={{ marginBottom: 8, fontSize: 11, opacity: 0.65 }}>
+              {pullStep.detail}
+            </div>
+          )}
+          {!pullBusy && (
+            <SelectivePanel heading="Include in pull" includes={pullIncludes} onChange={setPullIncludes} />
+          )}
+          <div style={styles.actionBar}>
+            <Button onClick={runPull} disabled={busy}>
+              {pullLabel}
+            </Button>
+          </div>
+        </>
       )}
-      {!pushBusy && !pullBusy && (
-        <SelectivePanel heading="Include in pull" includes={pullIncludes} onChange={setPullIncludes} />
-      )}
-      <div style={styles.actionBar}>
-        <Button onClick={runPull} disabled={pushBusy || pullBusy || undoBusy}>
-          {pullLabel}
-        </Button>
-      </div>
     </section>
   );
 }
@@ -1097,7 +1159,6 @@ function UnlinkedState({
         <LinkViaSftpDialog
           localSiteId={site.id}
           defaultLabel={site.name}
-          onCancel={() => setMode(email ? 'api' : 'sftp')}
           onLinked={(mapping) => onLinked(mapping)}
         />
       )}

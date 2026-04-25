@@ -14,7 +14,7 @@
 // without touching Local's modal stack.
 
 import React, { useMemo, useState } from 'react';
-import { Banner, Button, Text, TextButton } from '@getflywheel/local-components';
+import { Banner, Button, Text } from '@getflywheel/local-components';
 import { ipcClient, IpcCallError } from '../ipcClient';
 import type {
   ProbeSftpResponse,
@@ -25,7 +25,6 @@ import type {
 type Props = {
   localSiteId: string;
   defaultLabel?: string;
-  onCancel: () => void;
   onLinked: (mapping: SftpSiteMapping) => void;
 };
 
@@ -34,7 +33,6 @@ type ProbeOk = Extract<ProbeSftpResponse, { ok: true }>;
 export function LinkViaSftpDialog({
   localSiteId,
   defaultLabel,
-  onCancel,
   onLinked,
 }: Props): React.ReactElement {
   const [host, setHost] = useState('');
@@ -128,7 +126,7 @@ export function LinkViaSftpDialog({
 
   return (
     <section>
-      <Text size="caption" style={styles.help}>
+      <Text style={styles.help}>
         Use the SSH/SFTP credentials shown in your Cloudways dashboard
         (Application Settings → SSH/SFTP). Cloudways Sync will verify
         the connection before saving anything.
@@ -202,7 +200,7 @@ export function LinkViaSftpDialog({
 
       {candidates && candidates.length > 1 && (
         <div style={styles.candidates}>
-          <Text size="caption" style={styles.label}>
+          <Text style={styles.candidatesHeading}>
             Multiple WordPress apps detected for this user — pick one:
           </Text>
           {candidates.map((c) => (
@@ -267,12 +265,10 @@ export function LinkViaSftpDialog({
       )}
 
       <div style={styles.actions}>
-        <TextButton onClick={onCancel} disabled={busy}>Cancel</TextButton>
-        <div style={{ flex: 1 }} />
         <Button onClick={() => runProbe(pickedSysUser)} disabled={!formValid || busy}>
           {busy && !probe ? 'Testing…' : probe ? 'Re-test' : 'Test connection'}
         </Button>
-        <Button onClick={save} disabled={!probe || busy} style={{ marginLeft: 8 }}>
+        <Button onClick={save} disabled={!probe || busy}>
           {busy && probe ? 'Saving…' : 'Save link'}
         </Button>
       </div>
@@ -291,9 +287,9 @@ function Field({
 }): React.ReactElement {
   return (
     <label style={styles.field}>
-      <Text size="caption" style={styles.label}>{label}</Text>
+      <span style={styles.label}>{label}</span>
       {children}
-      {hint && <Text size="caption" style={styles.hint}>{hint}</Text>}
+      {hint && <span style={styles.hint}>{hint}</span>}
     </label>
   );
 }
@@ -301,73 +297,84 @@ function Field({
 const styles: Record<string, React.CSSProperties> = {
   help: {
     display: 'block',
-    opacity: 0.6,
-    marginBottom: 16,
-    lineHeight: 1.4,
+    fontSize: 14,
+    opacity: 0.78,
+    marginBottom: 20,
+    lineHeight: 1.5,
   },
   grid: {
     display: 'grid',
     gridTemplateColumns: '1fr 1fr',
-    gap: '12px 16px',
+    gap: '20px 24px',
   },
   field: {
     display: 'flex',
     flexDirection: 'column' as const,
-    gap: 4,
+    gap: 6,
   },
   label: {
-    opacity: 0.6,
-    fontSize: 11,
-    textTransform: 'uppercase' as const,
-    letterSpacing: 0.5,
+    display: 'block',
+    color: 'rgba(255,255,255,0.92)',
+    fontSize: 13,
+    fontWeight: 600,
   },
   hint: {
-    opacity: 0.45,
-    fontSize: 11,
+    display: 'block',
+    color: 'rgba(255,255,255,0.55)',
+    fontSize: 12,
+    lineHeight: 1.4,
     marginTop: 2,
   },
   input: {
     background: '#252626',
     color: '#e7e7e7',
-    border: '1px solid rgba(255,255,255,0.18)',
+    border: '1px solid rgba(255,255,255,0.22)',
     borderRadius: 4,
-    padding: '6px 10px',
-    fontSize: 13,
+    padding: '9px 12px',
+    fontSize: 14,
+    lineHeight: 1.3,
     width: '100%',
     boxSizing: 'border-box' as const,
   },
   candidates: {
-    marginTop: 12,
-    padding: '10px 12px',
+    marginTop: 16,
+    padding: '12px 14px',
     background: 'rgba(81,187,123,0.06)',
     border: '1px solid rgba(81,187,123,0.18)',
     borderRadius: 6,
   },
+  candidatesHeading: {
+    display: 'block',
+    fontSize: 13,
+    fontWeight: 600,
+    marginBottom: 6,
+    color: 'rgba(255,255,255,0.85)',
+  },
   candidateRow: {
     display: 'flex',
     alignItems: 'center',
-    gap: 8,
+    gap: 10,
     cursor: 'pointer',
-    padding: '4px 0',
-    fontSize: 13,
+    padding: '6px 0',
+    fontSize: 14,
   },
   banner: {
-    marginTop: 12,
+    marginTop: 16,
   },
   coach: {
     marginTop: 8,
-    fontSize: 12,
-    opacity: 0.85,
-    lineHeight: 1.45,
+    fontSize: 13,
+    opacity: 0.9,
+    lineHeight: 1.5,
   },
   coachList: {
-    margin: '4px 0 0 18px',
+    margin: '6px 0 0 20px',
     padding: 0,
   },
   actions: {
     display: 'flex',
     alignItems: 'center',
-    marginTop: 16,
-    gap: 8,
+    marginTop: 24,
+    gap: 10,
   },
 };
