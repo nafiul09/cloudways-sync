@@ -162,6 +162,64 @@ describe('probeSftp', () => {
     }
   });
 
+  it('dedupes two paths to the same physical app and prefers the applications/ form', async () => {
+    // Cloudways exposes each app via both the master's applications/ tree
+    // and a domain-named home dir; the same physical directory shows up
+    // under two paths. We stat each candidate and dedupe by device:inode.
+    const ssh = fakeSsh({
+      responses: [
+        {
+          match: /^for d in "\$HOME"\/applications/,
+          code: 0,
+          stdout: '/home/123.cloudwaysapps.com/hxkzz/public_html\n',
+        },
+        {
+          match: /^for d in \/home\/master\/applications/,
+          code: 0,
+          stdout: '/home/master/applications/hxkzz/public_html\n',
+        },
+        // Both stats hit the same dev:inode -> one logical app.
+        { match: /^stat -c.+applications\/hxkzz\/public_html/, code: 0, stdout: '64768:9000001\n' },
+        { match: /^stat -c.+cloudwaysapps\.com\/hxkzz\/public_html/, code: 0, stdout: '64768:9000001\n' },
+        { match: /^php -v/, code: 0, stdout: 'PHP 8.2.0\n' },
+        { match: /wp --info/, code: 0, stdout: 'WP-CLI 2.10' },
+        { match: /wp option get siteurl/, code: 0, stdout: 'https://example.com\n' },
+      ],
+    });
+    const res = await probeSftp(
+      { ...INPUT, username: 'cwsy_user2121' },
+      { sshFactory: () => ssh },
+    );
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.candidates).toHaveLength(1);
+      expect(res.sysUser).toBe('hxkzz');
+      expect(res.webRoot).toBe('/home/master/applications/hxkzz/public_html');
+    }
+  });
+
+  it('keeps both candidates when their inodes differ (truly distinct apps)', async () => {
+    const ssh = fakeSsh({
+      responses: [
+        {
+          match: /applications\/\*\/public_html/,
+          code: 0,
+          stdout:
+            '/home/master/applications/abcdef/public_html\n' +
+            '/home/master/applications/zyxwvu/public_html\n',
+        },
+        { match: /^stat -c.+abcdef\/public_html/, code: 0, stdout: '64768:1111\n' },
+        { match: /^stat -c.+zyxwvu\/public_html/, code: 0, stdout: '64768:2222\n' },
+      ],
+    });
+    const res = await probeSftp(INPUT, { sshFactory: () => ssh });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.code).toBe('SFTP_MULTIPLE_APPS');
+      expect(res.candidates?.map((c) => c.sysUser).sort()).toEqual(['abcdef', 'zyxwvu']);
+    }
+  });
+
   it('discovers an app under the user home (non-master sys_user layout)', async () => {
     const ssh = fakeSsh({
       responses: [

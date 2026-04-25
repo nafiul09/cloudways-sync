@@ -107,7 +107,8 @@ export async function probeSftp(
         ok: false,
         code: 'WP_NOT_FOUND',
         message:
-          'No WordPress install was found. Looked under applications/*/public_html/wp-config.php and ~/public_html/wp-config.php.',
+          'No WordPress install was found under this user. ' +
+          'Looked in $HOME/applications/*/public_html, /home/master/applications/*/public_html, and $HOME/public_html.',
       };
     }
 
@@ -177,30 +178,90 @@ async function discoverCandidates(
   ssh: SshClient,
   username: string,
 ): Promise<ProbeAppCandidate[]> {
-  // We try a small set of well-known layouts. Each command prints zero
-  // or more matched paths, one per line.
-  const homeDir = username === 'master' ? '/home/master' : `/home/${username}`;
-  const masterApps = `for d in ${homeDir}/applications/*/public_html; do [ -f "$d/wp-config.php" ] && echo "$d"; done`;
-  const appUserHome = `[ -f ${homeDir}/public_html/wp-config.php ] && echo ${homeDir}/public_html || true`;
+  // Cloudways SFTP login lands the user in their home directory, which
+  // we cannot derive from the username — `master_xxxxx` accounts share
+  // `/home/master`, and app-level sys_users land in `/home/<sys>`. So
+  // we let the remote shell expand `$HOME` for us and also probe
+  // `/home/master/applications/*` as an explicit fallback for setups
+  // where `$HOME` is unset.
+  //
+  // Each command prints zero or more matched paths, one per line.
+  const homeApps = `for d in "$HOME"/applications/*/public_html; do [ -f "$d/wp-config.php" ] && echo "$d"; done`;
+  const masterApps = `for d in /home/master/applications/*/public_html; do [ -f "$d/wp-config.php" ] && echo "$d"; done`;
+  const appUserHome = `[ -f "$HOME/public_html/wp-config.php" ] && echo "$HOME/public_html" || true`;
 
+  const homeRes = await ssh.exec(homeApps).catch(() => null);
   const masterRes = await ssh.exec(masterApps).catch(() => null);
   const userRes = await ssh.exec(appUserHome).catch(() => null);
 
   const lines: string[] = [];
+  if (homeRes && homeRes.code === 0) lines.push(...homeRes.stdout.split(/\r?\n/));
   if (masterRes && masterRes.code === 0) lines.push(...masterRes.stdout.split(/\r?\n/));
   if (userRes && userRes.code === 0) lines.push(...userRes.stdout.split(/\r?\n/));
 
-  const out: ProbeAppCandidate[] = [];
-  for (const raw of lines) {
-    const line = raw.trim();
+  const raw: ProbeAppCandidate[] = [];
+  for (const line of lines.map((l) => l.trim())) {
     if (!line) continue;
     if (!line.endsWith('/public_html')) continue;
     const sysMatch = /\/applications\/([^/]+)\/public_html$/.exec(line);
     const sysUser = sysMatch ? sysMatch[1]! : username;
-    if (out.find((c) => c.webRoot === line)) continue;
-    out.push({ webRoot: line, sysUser });
+    if (raw.find((c) => c.webRoot === line)) continue;
+    raw.push({ webRoot: line, sysUser });
   }
-  return out;
+
+  return await dedupeByInode(ssh, raw);
+}
+
+/**
+ * Cloudways exposes each app's web root through multiple paths — the
+ * master's `applications/<sys>/public_html` view AND the master's
+ * domain-named home (`/home/<id>.cloudwaysapps.com/<sys>/public_html`),
+ * which is what app-level SFTP users land near. Both paths point at
+ * the same physical directory, so a naive listing will show the same
+ * app twice. We `stat` each candidate, group by `device:inode`, and
+ * keep one representative per group — preferring the canonical
+ * `/applications/<sys>/public_html` form so the picker shows the
+ * real Cloudways sys_user instead of the SSH-login username.
+ */
+async function dedupeByInode(
+  ssh: SshClient,
+  candidates: ProbeAppCandidate[],
+): Promise<ProbeAppCandidate[]> {
+  if (candidates.length <= 1) return candidates;
+
+  const keys = await Promise.all(
+    candidates.map(async (c) => {
+      const cmd = `stat -c '%d:%i' ${shellQuote(c.webRoot)}`;
+      const res = await ssh.exec(cmd).catch(() => null);
+      if (!res || res.code !== 0) return null;
+      const k = res.stdout.trim();
+      return k || null;
+    }),
+  );
+
+  // Index of canonical-path candidate within its inode group:
+  // applications-style paths win over domain-home paths.
+  const isCanonical = (c: ProbeAppCandidate): boolean => /\/applications\/[^/]+\/public_html$/.test(c.webRoot);
+
+  const seen = new Map<string, ProbeAppCandidate>();
+  const unkeyed: ProbeAppCandidate[] = [];
+
+  for (let i = 0; i < candidates.length; i++) {
+    const c = candidates[i]!;
+    const key = keys[i];
+    if (!key) {
+      unkeyed.push(c);
+      continue;
+    }
+    const prev = seen.get(key);
+    if (!prev) {
+      seen.set(key, c);
+    } else if (isCanonical(c) && !isCanonical(prev)) {
+      seen.set(key, c);
+    }
+  }
+
+  return [...seen.values(), ...unkeyed];
 }
 
 async function safeCapture(ssh: SshClient, cmd: string): Promise<string | null> {
