@@ -38,6 +38,10 @@ export const CHANNELS = {
   GET_MAPPING_BY_APP: 'cs:getMappingByApp',
   LIST_MAPPINGS: 'cs:listMappings',
 
+  // SFTP-only link mode
+  PROBE_SFTP: 'cs:probeSftp',
+  LINK_VIA_SFTP: 'cs:linkViaSftp',
+
   // Breeze plugin detection
   DETECT_BREEZE: 'cs:detectBreeze',
 } as const;
@@ -179,8 +183,17 @@ export type PullIncludes = {
 };
 
 export type PlanPullRequest = {
-  serverId: number;
-  appId: number;
+  /**
+   * Discriminator between API-mode and SFTP-mode pulls. Defaults to
+   * 'api' (legacy callers don't set it). SFTP-mode requests omit
+   * serverId/appId; the handler resolves them via the SiteMapping
+   * stored under `localSiteId`.
+   */
+  linkMode?: 'api' | 'sftp';
+  /** Required for API mode. Omitted in SFTP mode. */
+  serverId?: number;
+  /** Required for API mode. Omitted in SFTP mode. */
+  appId?: number;
   destinationName: string;
   /** Human-readable server name, persisted in SiteMapping after pull. */
   serverLabel?: string;
@@ -244,9 +257,17 @@ export type DetectBreezeResponse = { breezeStatus: BreezeStatus };
 export type PushIncludes = PullIncludes; // same granularity for push
 
 export type PlanPushRequest = {
-  serverId: number;
-  /** Set to 0 for Mode B (new app provisioning). */
-  appId: number;
+  /**
+   * Discriminator between API-mode and SFTP-mode pushes. Defaults to
+   * 'api' (legacy callers don't set it). SFTP-mode requests omit
+   * serverId/appId; the handler resolves them via the SiteMapping
+   * stored under `localSiteId`.
+   */
+  linkMode?: 'api' | 'sftp';
+  /** Required for API mode. Omitted in SFTP mode. */
+  serverId?: number;
+  /** Required for API mode. Set to 0 for Mode B. Omitted in SFTP mode. */
+  appId?: number;
   /** The Local site ID (from Local's site registry). */
   localSiteId: string;
   /** The local site's URL (e.g. http://buildpress.local). */
@@ -267,16 +288,39 @@ export type PlanPushResponse = {
 
 // --- Phase 7: Undo ---
 
+export type UndoSnapshot = {
+  kind: 'local-tar';
+  /** Remote path to the wp-content tar.gz captured before push. */
+  remoteContentTarPath: string;
+  /** Remote path to the gzipped DB dump captured before push. */
+  remoteSqlGzPath: string;
+  /** Optional path to a local mirror of the snapshot under userDataDir. */
+  localCachePath?: string;
+  /** Approximate total size (bytes) of the snapshot files. */
+  sizeBytes?: number;
+};
+
 export type UndoRecord = {
   id: string;
   jobId: string;
-  serverId: number;
-  appId: number;
+  /**
+   * Discriminator. Records written before this field existed are
+   * treated as 'api' on read.
+   */
+  linkMode?: 'api' | 'sftp';
+  /** Identifies the SiteMapping for SFTP-mode undo. */
+  localSiteId?: string;
+  /** Present in API mode. */
+  serverId?: number;
+  /** Present in API mode. */
+  appId?: number;
   appLabel: string;
-  /** Cloudways backup timestamp used for restore. */
+  /** Cloudways backup timestamp used for restore (API mode). */
   remoteBackupTimestamp?: string;
-  /** Path to local safety snapshot (tar.gz). */
+  /** Path to local safety snapshot (tar.gz). Legacy. Use `snapshot`. */
   localSnapshotPath?: string;
+  /** Pre-push snapshot info (SFTP mode). */
+  snapshot?: UndoSnapshot;
   /** Push source URL (local .local URL). */
   sourceUrl: string;
   /** Push target URL (remote production URL). */
@@ -293,20 +337,62 @@ export type UndoPushResponse = { restored: boolean };
 
 // --- Phase 8: Site mapping ---
 
-export type SiteMapping = {
+/**
+ * Common fields shared by both link modes. `linkMode` is the
+ * discriminator: 'api' mappings carry serverId/appId and route through
+ * the Cloudways API client; 'sftp' mappings carry direct SSH/SFTP
+ * connection details and bypass the API entirely.
+ *
+ * Legacy mappings (written before this field existed) are migrated
+ * to `linkMode: 'api'` on read by SiteMapper.
+ */
+export type SiteMappingBase = {
   localSiteId: string;
-  serverId: number;
-  appId: number;
   appLabel: string;
   /** Human-readable server name (e.g. "LiveServer"). */
   serverLabel?: string;
-  remoteUrl: string;
+  /** Public URL of the remote site, when known. Optional in SFTP mode. */
+  remoteUrl?: string;
   createdAt: string;
   /** Local site URL (e.g. http://my-site.local). Set after pull. */
   localUrl?: string;
   /** Absolute path to Local site's webRoot (e.g. .../app/public). Set after pull. */
   webRootPath?: string;
 };
+
+export type ApiSiteMapping = SiteMappingBase & {
+  linkMode: 'api';
+  serverId: number;
+  appId: number;
+  /** Always set in API mode (we know the canonical app URL). */
+  remoteUrl: string;
+};
+
+export type SftpSiteMapping = SiteMappingBase & {
+  linkMode: 'sftp';
+  /** SFTP/SSH host (Cloudways server public IP, usually). */
+  host: string;
+  port: number;
+  /** SFTP/SSH username (Cloudways app's `master_*` or app sys_user). */
+  username: string;
+  /**
+   * Detected during the connection probe so push/pull don't have to
+   * shell out again. Example: "/home/master/applications/abcdef/public_html".
+   */
+  webRoot?: string;
+  /** Cached `wp option get siteurl` from probe time, if wp-cli was available. */
+  detectedSiteUrl?: string;
+};
+
+export type SiteMapping = ApiSiteMapping | SftpSiteMapping;
+
+/** Type guards for narrowing a SiteMapping in caller code. */
+export function isApiMapping(m: SiteMapping): m is ApiSiteMapping {
+  return m.linkMode === 'api';
+}
+export function isSftpMapping(m: SiteMapping): m is SftpSiteMapping {
+  return m.linkMode === 'sftp';
+}
 
 export type MapSiteRequest = {
   localSiteId: string;
@@ -330,3 +416,66 @@ export type GetMappingByAppRequest = { serverId: number; appId: number };
 export type GetMappingByAppResponse = { mapping: SiteMapping | null };
 
 export type ListMappingsResponse = { mappings: SiteMapping[] };
+
+// --- SFTP-only link mode: probe + link ---
+
+export type ProbeSftpRequest = {
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+  /** When the probe returned multiple candidates, ask again with a pick. */
+  pickedSysUser?: string;
+};
+
+export type ProbeSftpCandidate = {
+  sysUser: string;
+  webRoot: string;
+};
+
+export type ProbeSftpErrorCode =
+  | 'SSH_AUTH_FAILED'
+  | 'SSH_NETWORK'
+  | 'SSH_TIMEOUT'
+  | 'SSH_CLOSED'
+  | 'SFTP_MULTIPLE_APPS'
+  | 'WP_NOT_FOUND'
+  | 'UNKNOWN';
+
+export type ProbeSftpResponse =
+  | {
+      ok: true;
+      webRoot: string;
+      sysUser: string;
+      wpCliAvailable: boolean;
+      detectedSiteUrl: string | null;
+      phpVersion: string | null;
+      candidates: ProbeSftpCandidate[];
+    }
+  | {
+      ok: false;
+      code: ProbeSftpErrorCode;
+      message: string;
+      candidates?: ProbeSftpCandidate[];
+    };
+
+/**
+ * Re-runs the probe (defence-in-depth — the renderer can't be trusted
+ * to have probed first), then writes both the encrypted password and
+ * the SFTP mapping. Returns the persisted mapping.
+ */
+export type LinkViaSftpRequest = {
+  localSiteId: string;
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+  /** Human-friendly label shown in Site Tools panel. */
+  appLabel: string;
+  /** Optional; rendered as a link in Tools panel ("Open on web"). */
+  remoteUrl?: string;
+  /** Picked sys_user when the probe returned multiple candidates. */
+  pickedSysUser?: string;
+};
+
+export type LinkViaSftpResponse = { mapping: SftpSiteMapping };

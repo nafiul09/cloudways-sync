@@ -5,6 +5,40 @@ All notable changes to Cloudways Sync will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added — SFTP-only link mode
+
+- Link any Local site to a Cloudways app using just SSH/SFTP
+  credentials, without a Cloudways API key. Targets invited team
+  members who have SFTP access but no API access.
+- New "Link via SFTP…" inline form on the Site Tools panel: probes
+  the connection, auto-detects the WordPress web root, picks the
+  correct sys_user when multiple apps share a master user, and
+  surfaces wp-cli + PHP version + detected site URL before saving.
+- `SftpCredentialStore` persists the SFTP password encrypted via
+  Electron `safeStorage`, keyed by Local site id (so unlinking
+  cleanly removes credentials).
+- `AppLink` adapter abstracts API vs SFTP differences for the
+  push/pull orchestrators — API-only conveniences (Cloudways backup,
+  `restoreApp`, Varnish purge) live behind optional methods that the
+  SFTP path silently skips.
+- Push from SFTP-linked sites: same flow as API-mode push, but the
+  pre-push backup is a `tar -czf` of `wp-content` plus a
+  `wp db export | gzip` dropped into
+  `<appRoot>/private_html/.cwsync-snapshots/`. Snapshots under 500MB
+  are mirrored to `userDataDir` as a safety net.
+- Undo for SFTP-linked pushes: re-uploads mirrored snapshot files if
+  the remote copies were cleaned up, captures a "pre-undo" snapshot
+  for re-do, then untars `wp-content` + re-imports the SQL dump via
+  wp-cli.
+- Pull for SFTP-linked sites: skips the API-only pre-pull backup
+  (pulls are read-only anyway) and reuses the existing
+  tar-on-server + single-archive-download flow over SFTP.
+- Coachmarks for `SSH_AUTH_FAILED`, `SSH_NETWORK`, `SSH_TIMEOUT`,
+  `SSH_CLOSED`, and `WP_NOT_FOUND` probe failures, walking the user
+  to the right Cloudways panel.
+
 ## 0.1.0 — 2026-04-23 (alpha)
 
 First public alpha release. Ships the full Cloudways ↔ Local sync

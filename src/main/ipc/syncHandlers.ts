@@ -1,7 +1,8 @@
 import type { ServiceContainerServices } from '@getflywheel/local/main';
 import { CloudwaysError } from '../cloudways/errors';
-import { AppPasswordStore, EncryptionUnavailableError } from '../credentials';
+import { AppPasswordStore, EncryptionUnavailableError, SftpCredentialStore } from '../credentials';
 import { RemoteError } from '../remote/errors';
+import { probeSftp } from '../connection/sftpProbe';
 import type { ConnectionService } from '../connection/service';
 import { JobStore } from '../sync/JobStore';
 import { LocalSiteImporter } from '../sync/LocalSiteImporter';
@@ -9,6 +10,8 @@ import { PullOrchestrator } from '../sync/PullOrchestrator';
 import { PushOrchestrator } from '../sync/PushOrchestrator';
 import { SiteMapper } from '../sync/SiteMapper';
 import { UndoLedger } from '../sync/UndoLedger';
+import { type AppLink, appLinkFor } from '../sync/AppLink';
+import { restoreFromLocalSnapshot } from '../sync/snapshotUndo';
 import {
   CHANNELS,
   type CancelJobRequest,
@@ -21,6 +24,9 @@ import {
   type ListMappingsResponse,
   type JobDoneEvent,
   type JobProgressEvent,
+  type ApiSiteMapping,
+  type LinkViaSftpRequest,
+  type LinkViaSftpResponse,
   type ListUndoResponse,
   type MapSiteRequest,
   type MapSiteResponse,
@@ -28,9 +34,12 @@ import {
   type PlanPullResponse,
   type PlanPushRequest,
   type PlanPushResponse,
+  type ProbeSftpRequest,
+  type ProbeSftpResponse,
   type RunJobRequest,
   type RunJobResponse,
   type SerializedError,
+  type SftpSiteMapping,
   type SiteMapping,
   type UnmapSiteRequest,
   type UnmapSiteResponse,
@@ -74,6 +83,7 @@ export type RegisterSyncOptions = {
   sendIPCEvent: (channel: string, ...args: unknown[]) => void;
   jobs?: JobStore;
   appPasswords?: AppPasswordStore;
+  sftpCreds?: SftpCredentialStore;
 };
 
 export function registerSyncHandlers({
@@ -84,6 +94,7 @@ export function registerSyncHandlers({
   sendIPCEvent,
   jobs = new JobStore(),
   appPasswords,
+  sftpCreds,
 }: RegisterSyncOptions): void {
   const undoLedger = new UndoLedger(userDataDir);
   const siteMapper = new SiteMapper(userDataDir);
@@ -91,17 +102,37 @@ export function registerSyncHandlers({
   addIpcAsyncListener(CHANNELS.PLAN_PULL, (...args: unknown[]) => {
     const payload = args[0] as PlanPullRequest | undefined;
     return runHandler<PlanPullResponse>(async () => {
-      if (!payload || typeof payload.serverId !== 'number' || typeof payload.appId !== 'number') {
-        throw new CloudwaysError('AUTH_INVALID', 'serverId and appId are required.', { retriable: false });
+      if (!payload) {
+        throw new CloudwaysError('AUTH_INVALID', 'Missing pull payload.', { retriable: false });
       }
       if (!payload.destinationName?.trim()) {
         throw new CloudwaysError('AUTH_INVALID', 'destinationName is required.', { retriable: false });
       }
-      if (payload.sftpPassword?.trim()) {
-        if (!appPasswords) {
-          throw new EncryptionUnavailableError();
+      const linkMode = payload.linkMode ?? 'api';
+      if (linkMode === 'api') {
+        if (typeof payload.serverId !== 'number' || typeof payload.appId !== 'number') {
+          throw new CloudwaysError(
+            'AUTH_INVALID',
+            'serverId and appId are required for API-mode pull.',
+            { retriable: false },
+          );
         }
-        await appPasswords.set(payload.serverId, payload.appId, payload.sftpPassword);
+        if (payload.sftpPassword?.trim()) {
+          if (!appPasswords) {
+            throw new EncryptionUnavailableError();
+          }
+          await appPasswords.set(payload.serverId, payload.appId, payload.sftpPassword);
+        }
+      } else {
+        // SFTP-mode pull updates an existing linked site, so localSiteId
+        // is mandatory and the SiteMapping carries the credentials.
+        if (!payload.localSiteId?.trim()) {
+          throw new CloudwaysError(
+            'AUTH_INVALID',
+            'localSiteId is required for SFTP-mode pull.',
+            { retriable: false },
+          );
+        }
       }
       const plan = jobs.createPullPlan(payload);
       return { planId: plan.id, steps: plan.steps };
@@ -111,8 +142,8 @@ export function registerSyncHandlers({
   addIpcAsyncListener(CHANNELS.PLAN_PUSH, (...args: unknown[]) => {
     const payload = args[0] as PlanPushRequest | undefined;
     return runHandler<PlanPushResponse>(async () => {
-      if (!payload || typeof payload.serverId !== 'number' || typeof payload.appId !== 'number') {
-        throw new CloudwaysError('AUTH_INVALID', 'serverId and appId are required.', { retriable: false });
+      if (!payload) {
+        throw new CloudwaysError('AUTH_INVALID', 'Missing push payload.', { retriable: false });
       }
       if (!payload.localSiteId?.trim()) {
         throw new CloudwaysError('AUTH_INVALID', 'localSiteId is required.', { retriable: false });
@@ -123,11 +154,21 @@ export function registerSyncHandlers({
       if (!payload.webRootPath?.trim()) {
         throw new CloudwaysError('AUTH_INVALID', 'webRootPath is required.', { retriable: false });
       }
-      // Mode B: appId === 0 requires a newAppLabel
-      if (payload.appId === 0 && !payload.newAppLabel?.trim()) {
-        throw new CloudwaysError('AUTH_INVALID', 'newAppLabel is required when appId is 0 (Mode B).', {
-          retriable: false,
-        });
+      const linkMode = payload.linkMode ?? 'api';
+      if (linkMode === 'api') {
+        if (typeof payload.serverId !== 'number' || typeof payload.appId !== 'number') {
+          throw new CloudwaysError(
+            'AUTH_INVALID',
+            'serverId and appId are required for API-mode push.',
+            { retriable: false },
+          );
+        }
+        // Mode B: appId === 0 requires a newAppLabel
+        if (payload.appId === 0 && !payload.newAppLabel?.trim()) {
+          throw new CloudwaysError('AUTH_INVALID', 'newAppLabel is required when appId is 0 (Mode B).', {
+            retriable: false,
+          });
+        }
       }
       const plan = jobs.createPushPlan(payload);
       return { planId: plan.id, steps: plan.steps };
@@ -144,19 +185,71 @@ export function registerSyncHandlers({
       // Try pull plan first, then push plan
       const pullPlan = jobs.getPullPlan(payload.planId);
       if (pullPlan) {
+        // Resolve the AppLink for this plan. SFTP-mode pulls require a
+        // pre-existing mapping (the user must have linked via SFTP first);
+        // API-mode pulls either reference an existing mapping or
+        // synthesize one from the request fields.
+        let link: AppLink;
+        if (pullPlan.linkMode === 'sftp') {
+          if (!pullPlan.localSiteId) {
+            throw new CloudwaysError(
+              'OPERATION_FAILED',
+              'SFTP-mode pull plan is missing localSiteId.',
+              { retriable: false },
+            );
+          }
+          const mapping = await siteMapper.get(pullPlan.localSiteId);
+          if (!mapping || mapping.linkMode !== 'sftp') {
+            throw new CloudwaysError(
+              'OPERATION_FAILED',
+              'No SFTP mapping found for this site. Re-link via SFTP and try again.',
+              { retriable: false },
+            );
+          }
+          if (!sftpCreds) throw new EncryptionUnavailableError();
+          link = appLinkFor(mapping, { sftpCreds });
+        } else {
+          if (typeof pullPlan.serverId !== 'number' || typeof pullPlan.appId !== 'number') {
+            throw new CloudwaysError(
+              'OPERATION_FAILED',
+              'API-mode pull plan is missing serverId/appId.',
+              { retriable: false },
+            );
+          }
+          const apiMapping: ApiSiteMapping = {
+            linkMode: 'api',
+            localSiteId: pullPlan.localSiteId ?? '',
+            serverId: pullPlan.serverId,
+            appId: pullPlan.appId,
+            appLabel: pullPlan.destinationName,
+            serverLabel: pullPlan.serverLabel,
+            remoteUrl: '',
+            createdAt: new Date().toISOString(),
+          };
+          link = appLinkFor(apiMapping, { client: connection.requireClient(), appPasswords });
+        }
+
         const orchestrator = new PullOrchestrator({
-          client: connection.requireClient(),
+          link,
           importer: new LocalSiteImporter({ services }),
           userDataDir,
-          getAppPassword: appPasswords ? (serverId, appId) => appPasswords.get(serverId, appId) : undefined,
           isCancelled: (jobId) => jobs.isCancelled(jobId),
           emitProgress: (event: JobProgressEvent) => sendIPCEvent(CHANNELS.JOB_PROGRESS, event),
         });
         const result = await orchestrator.run(pullPlan);
 
-        // After successful pull, save a mapping so push can find the local site
-        if (result.status === 'success' && result.localSiteId) {
+        // After successful pull, save a mapping so push can find the local site.
+        // For SFTP mode, the mapping already exists and may carry richer fields
+        // (host/port/username/webRoot) — don't overwrite it.
+        if (
+          result.status === 'success' &&
+          result.localSiteId &&
+          pullPlan.linkMode !== 'sftp' &&
+          typeof pullPlan.serverId === 'number' &&
+          typeof pullPlan.appId === 'number'
+        ) {
           await siteMapper.set({
+            linkMode: 'api',
             localSiteId: result.localSiteId,
             serverId: pullPlan.serverId,
             appId: pullPlan.appId,
@@ -175,48 +268,82 @@ export function registerSyncHandlers({
 
       const pushPlan = jobs.getPushPlan(payload.planId);
       if (pushPlan) {
-        const client = connection.requireClient();
-
-        // Mode B: provision a new app before running the push
+        // Resolve the AppLink for this plan. API-mode plans either
+        // reference an existing mapping or (Mode B) provision a new
+        // app on the fly. SFTP-mode plans must already have a mapping
+        // saved by the Link via SFTP flow.
+        let link: AppLink;
         let newlyCreatedAppId: number | undefined;
-        if (pushPlan.appId === 0) {
-          const appLabel = pushPlan.newAppLabel;
-          if (!appLabel) {
-            throw new CloudwaysError('AUTH_INVALID', 'newAppLabel is required for Mode B push.', {
-              retriable: false,
-            });
+
+        if (pushPlan.linkMode === 'sftp') {
+          const mapping = await siteMapper.get(pushPlan.localSiteId);
+          if (!mapping || mapping.linkMode !== 'sftp') {
+            throw new CloudwaysError(
+              'OPERATION_FAILED',
+              'No SFTP mapping found for this site. Re-link via SFTP and try again.',
+              { retriable: false },
+            );
+          }
+          if (!sftpCreds) {
+            throw new EncryptionUnavailableError();
+          }
+          link = appLinkFor(mapping, { sftpCreds });
+        } else {
+          const client = connection.requireClient();
+
+          // Mode B: provision a new app before running the push
+          if (pushPlan.appId === 0) {
+            const appLabel = pushPlan.newAppLabel;
+            if (!appLabel) {
+              throw new CloudwaysError('AUTH_INVALID', 'newAppLabel is required for Mode B push.', {
+                retriable: false,
+              });
+            }
+
+            // Create the app
+            const createOpId = await client.createApp(pushPlan.serverId as number, appLabel);
+            await client.waitForOperation(createOpId);
+
+            // Re-fetch servers to find the newly-created app
+            const servers = await client.listServers();
+            const server = servers.find((s) => s.id === pushPlan.serverId);
+            if (!server) {
+              throw new CloudwaysError('OPERATION_FAILED', `Server ${pushPlan.serverId} not found after app creation.`, {
+                retriable: false,
+              });
+            }
+            // The new app is the one whose label matches and wasn't in the plan
+            const newApp = server.apps.find((a) => a.label === appLabel);
+            if (!newApp) {
+              throw new CloudwaysError('OPERATION_FAILED', `Newly created app "${appLabel}" not found on server.`, {
+                retriable: false,
+              });
+            }
+
+            // Update the plan's appId with the real value
+            pushPlan.appId = newApp.id;
+            newlyCreatedAppId = newApp.id;
           }
 
-          // Create the app
-          const createOpId = await client.createApp(pushPlan.serverId, appLabel);
-          await client.waitForOperation(createOpId);
-
-          // Re-fetch servers to find the newly-created app
-          const servers = await client.listServers();
-          const server = servers.find((s) => s.id === pushPlan.serverId);
-          if (!server) {
-            throw new CloudwaysError('OPERATION_FAILED', `Server ${pushPlan.serverId} not found after app creation.`, {
-              retriable: false,
-            });
-          }
-          // The new app is the one whose label matches and wasn't in the plan
-          const newApp = server.apps.find((a) => a.label === appLabel);
-          if (!newApp) {
-            throw new CloudwaysError('OPERATION_FAILED', `Newly created app "${appLabel}" not found on server.`, {
-              retriable: false,
-            });
-          }
-
-          // Update the plan's appId with the real value
-          pushPlan.appId = newApp.id;
-          newlyCreatedAppId = newApp.id;
+          // Synthesize an ApiSiteMapping for the orchestrator. The
+          // canonical mapping (with full label/remoteUrl) is written
+          // only after Mode B success below.
+          const apiMapping: ApiSiteMapping = {
+            linkMode: 'api',
+            localSiteId: pushPlan.localSiteId,
+            serverId: pushPlan.serverId as number,
+            appId: pushPlan.appId as number,
+            appLabel: pushPlan.newAppLabel ?? '',
+            remoteUrl: '',
+            createdAt: new Date().toISOString(),
+          };
+          link = appLinkFor(apiMapping, { client, appPasswords });
         }
 
         const orchestrator = new PushOrchestrator({
-          client,
+          link,
           undoLedger,
           userDataDir,
-          getAppPassword: appPasswords ? (serverId, appId) => appPasswords.get(serverId, appId) : undefined,
           localDbDump: async (localSiteId, destination) => {
             const site = services.siteData.getSite(localSiteId);
             if (!site) throw new Error(`Local site "${localSiteId}" not found.`);
@@ -253,8 +380,9 @@ export function registerSyncHandlers({
         // On success for Mode B, save a site mapping
         if (newlyCreatedAppId !== undefined) {
           const mapping: SiteMapping = {
+            linkMode: 'api',
             localSiteId: pushPlan.localSiteId,
-            serverId: pushPlan.serverId,
+            serverId: pushPlan.serverId as number,
             appId: newlyCreatedAppId,
             appLabel: pushPlan.newAppLabel as string,
             remoteUrl: result.localUrl ?? '',
@@ -307,7 +435,54 @@ export function registerSyncHandlers({
           retriable: false,
         });
       }
+
+      // SFTP-mode records carry a local-tar snapshot pointer instead
+      // of a Cloudways backup id. Restore by reapplying the snapshot
+      // through the AppLink built from the saved mapping.
+      if (record.linkMode === 'sftp') {
+        if (!record.snapshot) {
+          throw new CloudwaysError(
+            'OPERATION_FAILED',
+            'This SFTP-mode push has no snapshot. Undo is unavailable.',
+            { retriable: false },
+          );
+        }
+        if (!record.localSiteId) {
+          throw new CloudwaysError(
+            'OPERATION_FAILED',
+            'Undo record is missing localSiteId. Re-link the site and try again.',
+            { retriable: false },
+          );
+        }
+        const mapping = await siteMapper.get(record.localSiteId);
+        if (!mapping || mapping.linkMode !== 'sftp') {
+          throw new CloudwaysError(
+            'OPERATION_FAILED',
+            'No SFTP mapping found for this site. Re-link via SFTP to enable undo.',
+            { retriable: false },
+          );
+        }
+        if (!sftpCreds) throw new EncryptionUnavailableError();
+        const link = appLinkFor(mapping, { sftpCreds });
+        await restoreFromLocalSnapshot({
+          link,
+          snapshot: record.snapshot,
+          jobId: record.jobId,
+          emitProgress: (event) => sendIPCEvent(CHANNELS.JOB_PROGRESS, event),
+        });
+        await undoLedger.markUndone(record.id);
+        return { restored: true };
+      }
+
+      // API-mode (default for legacy records).
       const client = connection.requireClient();
+      if (typeof record.serverId !== 'number' || typeof record.appId !== 'number') {
+        throw new CloudwaysError(
+          'OPERATION_FAILED',
+          'API-mode undo record is missing serverId/appId.',
+          { retriable: false },
+        );
+      }
       const operationId = await client.restoreApp(record.serverId, record.appId);
       await client.waitForOperation(operationId);
       await undoLedger.markUndone(record.id);
@@ -330,6 +505,7 @@ export function registerSyncHandlers({
         throw new CloudwaysError('AUTH_INVALID', 'appLabel is required.', { retriable: false });
       }
       const mapping: SiteMapping = {
+        linkMode: 'api',
         localSiteId: payload.localSiteId,
         serverId: payload.serverId,
         appId: payload.appId,
@@ -355,10 +531,17 @@ export function registerSyncHandlers({
       if (!payload?.localSiteId?.trim()) {
         throw new CloudwaysError('AUTH_INVALID', 'localSiteId is required.', { retriable: false });
       }
+      // Look up first so we can clean up SFTP credentials before
+      // forgetting the mapping. (Without the mapping we'd have no
+      // record that this site ever had SFTP creds stored.)
+      const existing = await siteMapper.get(payload.localSiteId);
       const removed = await siteMapper.delete(payload.localSiteId, {
         serverId: payload.serverId,
         appId: payload.appId,
       });
+      if (removed && existing?.linkMode === 'sftp' && sftpCreds) {
+        await sftpCreds.delete(existing.localSiteId).catch(() => undefined);
+      }
       return { removed };
     });
   });
@@ -391,4 +574,106 @@ export function registerSyncHandlers({
       return { mappings };
     });
   });
+
+  // --- SFTP-only link mode handlers ---
+
+  addIpcAsyncListener(CHANNELS.PROBE_SFTP, (...args: unknown[]) => {
+    const payload = args[0] as ProbeSftpRequest | undefined;
+    return runHandler<ProbeSftpResponse>(async () => {
+      validateSftpProbePayload(payload);
+      const result = await probeSftp(
+        {
+          host: payload!.host.trim(),
+          port: payload!.port,
+          username: payload!.username.trim(),
+          password: payload!.password,
+        },
+        payload!.pickedSysUser ? { pickedSysUser: payload!.pickedSysUser } : {},
+      );
+      return result;
+    });
+  });
+
+  addIpcAsyncListener(CHANNELS.LINK_VIA_SFTP, (...args: unknown[]) => {
+    const payload = args[0] as LinkViaSftpRequest | undefined;
+    return runHandler<LinkViaSftpResponse>(async () => {
+      if (!payload?.localSiteId?.trim()) {
+        throw new CloudwaysError('AUTH_INVALID', 'localSiteId is required.', { retriable: false });
+      }
+      if (!payload.appLabel?.trim()) {
+        throw new CloudwaysError('AUTH_INVALID', 'appLabel is required.', { retriable: false });
+      }
+      validateSftpProbePayload(payload);
+      if (!sftpCreds) {
+        throw new EncryptionUnavailableError();
+      }
+
+      // Defence in depth: re-probe before persisting so we never write a
+      // mapping that points at credentials we couldn't actually verify.
+      const probe = await probeSftp(
+        {
+          host: payload.host.trim(),
+          port: payload.port,
+          username: payload.username.trim(),
+          password: payload.password,
+        },
+        payload.pickedSysUser ? { pickedSysUser: payload.pickedSysUser } : {},
+      );
+      if (!probe.ok) {
+        // Map probe codes that line up with RemoteError directly, then
+        // fall back to a generic CloudwaysError so the message and the
+        // probe's own code still reach the renderer via `detail`.
+        switch (probe.code) {
+          case 'SSH_AUTH_FAILED':
+          case 'SSH_NETWORK':
+          case 'SSH_TIMEOUT':
+          case 'SSH_CLOSED':
+            throw new RemoteError(probe.code, probe.message, {
+              retriable: probe.code !== 'SSH_AUTH_FAILED',
+              detail: { probeCode: probe.code, candidates: probe.candidates },
+            });
+          default:
+            throw new CloudwaysError('OPERATION_FAILED', probe.message, {
+              retriable: false,
+              detail: { probeCode: probe.code, candidates: probe.candidates },
+            });
+        }
+      }
+
+      await sftpCreds.set(payload.localSiteId, payload.password);
+
+      const mapping: SftpSiteMapping = {
+        linkMode: 'sftp',
+        localSiteId: payload.localSiteId,
+        appLabel: payload.appLabel,
+        host: payload.host.trim(),
+        port: payload.port,
+        username: payload.username.trim(),
+        webRoot: probe.webRoot,
+        detectedSiteUrl: probe.detectedSiteUrl ?? undefined,
+        remoteUrl: payload.remoteUrl?.trim() || probe.detectedSiteUrl || undefined,
+        createdAt: new Date().toISOString(),
+      };
+      await siteMapper.set(mapping);
+      return { mapping };
+    });
+  });
+}
+
+function validateSftpProbePayload(payload: ProbeSftpRequest | undefined): void {
+  if (!payload) {
+    throw new CloudwaysError('AUTH_INVALID', 'Probe payload is required.', { retriable: false });
+  }
+  if (!payload.host?.trim()) {
+    throw new CloudwaysError('AUTH_INVALID', 'host is required.', { retriable: false });
+  }
+  if (typeof payload.port !== 'number' || !Number.isFinite(payload.port) || payload.port <= 0) {
+    throw new CloudwaysError('AUTH_INVALID', 'port must be a positive number.', { retriable: false });
+  }
+  if (!payload.username?.trim()) {
+    throw new CloudwaysError('AUTH_INVALID', 'username is required.', { retriable: false });
+  }
+  if (!payload.password) {
+    throw new CloudwaysError('AUTH_INVALID', 'password is required.', { retriable: false });
+  }
 }
