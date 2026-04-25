@@ -44,6 +44,7 @@ export type CredentialStoreOptions = {
 const SECRET_FILE = 'credentials.bin';
 const META_FILE = 'credentials.meta.json';
 const APP_PASSWORDS_FILE = 'app-passwords.bin';
+const SFTP_CREDS_FILE = 'sftp-creds.bin';
 
 export class EncryptionUnavailableError extends Error {
   constructor() {
@@ -198,6 +199,84 @@ export class AppPasswordStore {
     } else {
       delete passwords[key];
     }
+    await this.writeAll(passwords);
+  }
+
+  async clear(): Promise<void> {
+    await rm(this.filePath(), { force: true });
+  }
+}
+
+/**
+ * Per-Local-site SFTP password store for SFTP-only-mode mappings.
+ *
+ * Keyed by `localSiteId` rather than `(serverId, appId)` because SFTP
+ * mode never knows the Cloudways serverId/appId. Layout mirrors
+ * `AppPasswordStore`: a single encrypted JSON blob in the addon's
+ * userData dir.
+ */
+export class SftpCredentialStore {
+  private readonly dir: string;
+  private readonly safeStorage: SafeStorage;
+
+  constructor(opts: CredentialStoreOptions) {
+    this.dir = opts.dir;
+    this.safeStorage = opts.safeStorage;
+  }
+
+  private filePath(): string {
+    return path.join(this.dir, SFTP_CREDS_FILE);
+  }
+
+  private async readAll(): Promise<Record<string, string>> {
+    let blob: Buffer;
+    try {
+      blob = await readFile(this.filePath());
+    } catch {
+      return {};
+    }
+    if (!this.safeStorage.isEncryptionAvailable()) {
+      throw new EncryptionUnavailableError();
+    }
+    const decrypted = this.safeStorage.decryptString(blob);
+    const parsed = JSON.parse(decrypted) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const out: Record<string, string> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value === 'string') out[key] = value;
+    }
+    return out;
+  }
+
+  private async writeAll(passwords: Record<string, string>): Promise<void> {
+    if (!this.safeStorage.isEncryptionAvailable()) {
+      throw new EncryptionUnavailableError();
+    }
+    await mkdir(this.dir, { recursive: true });
+    const encrypted = this.safeStorage.encryptString(JSON.stringify(passwords));
+    await writeFile(this.filePath(), encrypted, { mode: 0o600 });
+  }
+
+  async get(localSiteId: string): Promise<string | undefined> {
+    const passwords = await this.readAll();
+    return passwords[localSiteId];
+  }
+
+  async set(localSiteId: string, password: string): Promise<void> {
+    const trimmed = password.trim();
+    const passwords = await this.readAll();
+    if (trimmed) {
+      passwords[localSiteId] = trimmed;
+    } else {
+      delete passwords[localSiteId];
+    }
+    await this.writeAll(passwords);
+  }
+
+  async delete(localSiteId: string): Promise<void> {
+    const passwords = await this.readAll();
+    if (!(localSiteId in passwords)) return;
+    delete passwords[localSiteId];
     await this.writeAll(passwords);
   }
 

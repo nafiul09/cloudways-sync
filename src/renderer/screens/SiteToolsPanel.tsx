@@ -15,6 +15,7 @@ import { refreshSiteListIcons } from '../sidebar/injectSiteListIcons';
 import { showSyncModal, failSyncModal } from '../SyncModal';
 import { MaskedEmail } from '../components/MaskedEmail';
 import type {
+  ApiSiteMapping,
   AppDetail,
   AppSummary,
   BreezeStatus,
@@ -23,9 +24,11 @@ import type {
   PullIncludes,
   PushIncludes,
   ServerSummary,
+  SftpSiteMapping,
   SiteMapping,
   SmokeAppResponse,
 } from '../../shared/ipcTypes';
+import { isApiMapping } from '../../shared/ipcTypes';
 
 const PUSH_STEP_LABELS: Record<string, string> = {
   validate: 'Validating',
@@ -227,8 +230,10 @@ export function SiteToolsPanel({ site }: { site: Site }): React.ReactElement {
         const res = await ipcClient.getMapping({ localSiteId: site.id });
         if (cancelled) return;
         const m = res.mapping;
-        // Backfill serverLabel for mappings created before that field existed.
-        if (m && !m.serverLabel) {
+        // Backfill serverLabel for API mappings created before that field
+        // existed. SFTP mappings are linked locally — there is no remote
+        // server label to fetch.
+        if (m && isApiMapping(m) && !m.serverLabel) {
           try {
             const servers = await ipcClient.listServers();
             const server = servers.servers.find((s) => s.id === m.serverId);
@@ -274,26 +279,44 @@ export function SiteToolsPanel({ site }: { site: Site }): React.ReactElement {
         mapping ? (
           <>
             {unlinkError && <div style={styles.banner}><Banner variant="error">{unlinkError}</Banner></div>}
-            <LinkedState
-              site={site}
-              email={status.email}
-              mapping={mapping}
-              onUnlink={() => {
-                const previous = mapping;
-                setUnlinkError(undefined);
-                setMapping(null);
-                ipcClient.unmapSite({
-                  localSiteId: site.id,
-                  serverId: previous.serverId,
-                  appId: previous.appId,
-                }).then(() => {
-                  refreshSiteListIcons();
-                }).catch((err) => {
-                  setMapping(previous);
-                  setUnlinkError(err instanceof IpcCallError ? err.message : String(err));
-                });
-              }}
-            />
+            {isApiMapping(mapping) ? (
+              <LinkedState
+                site={site}
+                email={status.email}
+                mapping={mapping}
+                onUnlink={() => {
+                  const previous = mapping;
+                  setUnlinkError(undefined);
+                  setMapping(null);
+                  ipcClient.unmapSite({
+                    localSiteId: site.id,
+                    serverId: previous.serverId,
+                    appId: previous.appId,
+                  }).then(() => {
+                    refreshSiteListIcons();
+                  }).catch((err) => {
+                    setMapping(previous);
+                    setUnlinkError(err instanceof IpcCallError ? err.message : String(err));
+                  });
+                }}
+              />
+            ) : (
+              <SftpLinkedState
+                email={status.email}
+                mapping={mapping}
+                onUnlink={() => {
+                  const previous = mapping;
+                  setUnlinkError(undefined);
+                  setMapping(null);
+                  ipcClient.unmapSite({ localSiteId: site.id })
+                    .then(() => { refreshSiteListIcons(); })
+                    .catch((err) => {
+                      setMapping(previous);
+                      setUnlinkError(err instanceof IpcCallError ? err.message : String(err));
+                    });
+                }}
+              />
+            )}
           </>
         ) : (
           <UnlinkedState
@@ -331,7 +354,7 @@ function LinkedState({
 }: {
   site: Site;
   email: string;
-  mapping: SiteMapping;
+  mapping: ApiSiteMapping;
   onUnlink: () => void;
 }): React.ReactElement {
   const [mode, setMode] = useState<'push' | 'pull'>('push');
@@ -648,6 +671,52 @@ function LinkedState({
           </div>
         </>
       )}
+    </section>
+  );
+}
+
+// --- Linked via SFTP-only mode (Phase 1 placeholder) ---
+//
+// The full Push / Pull UI for SFTP mappings is wired up in later phases.
+// For Phase 1 we ship the type plumbing and a minimal "linked" view so
+// existing API-mode users see no regressions while the rest of the
+// feature lands behind the scenes.
+
+function SftpLinkedState({
+  email,
+  mapping,
+  onUnlink,
+}: {
+  email: string;
+  mapping: SftpSiteMapping;
+  onUnlink: () => void;
+}): React.ReactElement {
+  return (
+    <section>
+      <Banner variant="success">
+        Connected as <MaskedEmail email={email} bold />
+      </Banner>
+      <div style={styles.linkedInfo}>
+        <div style={styles.linkedHeader}>
+          <Text style={styles.linkedHeading}>Linked via SFTP</Text>
+          <TextButton onClick={onUnlink} style={styles.unlinkBtn}>Unlink</TextButton>
+        </div>
+        <div style={styles.linkedGrid}>
+          <Text size="caption" style={styles.linkedLabel}>App</Text>
+          <Text style={styles.linkedValue}>{mapping.appLabel}</Text>
+          <Text size="caption" style={styles.linkedLabel}>Host</Text>
+          <Text style={styles.linkedValue}>{mapping.username}@{mapping.host}:{mapping.port}</Text>
+          {mapping.remoteUrl && (
+            <>
+              <Text size="caption" style={styles.linkedLabel}>URL</Text>
+              <Text style={{ ...styles.linkedValue, color: '#51bb7b' }}>{mapping.remoteUrl}</Text>
+            </>
+          )}
+        </div>
+      </div>
+      <Banner variant="warning">
+        Push and pull over SFTP are coming online with the SFTP-only link mode rollout.
+      </Banner>
     </section>
   );
 }
