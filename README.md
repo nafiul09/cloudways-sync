@@ -16,9 +16,14 @@ edges. See [CHANGELOG.md](./CHANGELOG.md) for the full release notes.
 - **Connect once** — API key stored encrypted via Electron
   `safeStorage`; surfaced everywhere as a masked email with an
   eye-icon reveal for screen-share privacy.
+- **Two linking modes** — connect via Cloudways API for the full
+  experience (servers/apps picker, remote backups, restore-app undo),
+  or link directly via SSH/SFTP credentials when you don't have API
+  access (e.g. invited team members). Both modes can coexist on the
+  same Local install.
 - **Pull** any Cloudways WordPress app into a new or existing Local
   site. Archive-based transfer (tar on server → one download) with a
-  pre-pull Cloudways backup.
+  pre-pull Cloudways backup (API mode).
 - **Push** a Local site back to a linked Cloudways app. Pre-push
   remote backup, optional Breeze re-activation, and one-click undo.
 - **Selective sync** — per-subdir checkboxes (database, uploads,
@@ -30,6 +35,25 @@ edges. See [CHANGELOG.md](./CHANGELOG.md) for the full release notes.
   close Local mid-transfer.
 - **Humanized errors** — every failure path has a user-facing message
   with the underlying code exposed for support.
+
+## Linking modes
+
+| Capability | API mode | SFTP mode |
+| --- | --- | --- |
+| Browse Cloudways servers & apps in Local | ✅ | — |
+| Pre-sync Cloudways backup | ✅ | — |
+| Pre-push safety snapshot on the server | ✅ | ✅ (tar of `wp-content` + `wp db export`) |
+| Push from Local → Cloudways | ✅ | ✅ |
+| Pull from Cloudways → Local | ✅ | ✅ |
+| Undo last push | ✅ (Cloudways `restoreApp`) | ✅ (re-applies the local-tar snapshot) |
+| Mode B (provision a new Cloudways app from Local) | ✅ | — |
+
+API mode requires your Cloudways email + API key from
+*My Profile → API Keys*. SFTP mode only needs the SSH/SFTP
+credentials shown under *Application Settings → SSH/SFTP* — useful
+for invited team members who don't have access to the account's API
+key. Open any site's **Tools → Cloudways Sync** tab to link it via
+either mode.
 
 ## Requirements
 
