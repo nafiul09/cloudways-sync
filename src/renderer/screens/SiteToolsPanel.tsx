@@ -936,7 +936,10 @@ function UnlinkedState({
   email?: string;
   onLinked: (mapping: SiteMapping) => void;
 }): React.ReactElement {
-  const [showSftpForm, setShowSftpForm] = useState(false);
+  // The unlinked screen is split into two tabs: link via Cloudways API
+  // (the original flow) or link via SFTP (manual credentials). Default
+  // to whichever mode is usable — API if connected, SFTP otherwise.
+  const [mode, setMode] = useState<'api' | 'sftp'>(email ? 'api' : 'sftp');
   const [servers, setServers] = useState<ServerSummary[] | undefined>();
   const [apps, setApps] = useState<AppSummary[] | undefined>();
   const [selectedServerId, setSelectedServerId] = useState<number | undefined>();
@@ -1069,38 +1072,48 @@ function UnlinkedState({
 
   return (
     <section>
-      {showSftpForm && (
+      <div style={styles.tabs} role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === 'api'}
+          onClick={() => setMode('api')}
+          style={mode === 'api' ? styles.tabActive : styles.tab}
+        >
+          Cloudways API
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === 'sftp'}
+          onClick={() => setMode('sftp')}
+          style={mode === 'sftp' ? styles.tabActive : styles.tab}
+        >
+          SFTP credentials
+        </button>
+      </div>
+
+      {mode === 'sftp' && (
         <LinkViaSftpDialog
           localSiteId={site.id}
           defaultLabel={site.name}
-          onCancel={() => setShowSftpForm(false)}
-          onLinked={(mapping) => {
-            setShowSftpForm(false);
-            onLinked(mapping);
-          }}
+          onCancel={() => setMode(email ? 'api' : 'sftp')}
+          onLinked={(mapping) => onLinked(mapping)}
         />
       )}
 
-      {!showSftpForm && !email && (
+      {mode === 'api' && !email && (
         <>
           <Banner variant="warning">
             Cloudways Sync isn&rsquo;t connected to a Cloudways account, so the
-            server / app picker is unavailable. You can still link this site
-            via SFTP — open the form below.
+            server / app picker is unavailable. Open the Cloudways Sync sidebar
+            to connect with an API key, or switch to the <strong>SFTP
+            credentials</strong> tab if you don&rsquo;t have API access.
           </Banner>
-          <div style={styles.row}>
-            <Button onClick={() => setShowSftpForm(true)}>Link via SFTP…</Button>
-          </div>
-          <div style={styles.row}>
-            <Text size="caption" style={{ opacity: 0.6 }}>
-              Open the Cloudways Sync sidebar to connect with an API key if
-              you have one — both modes can coexist.
-            </Text>
-          </div>
         </>
       )}
 
-      {!showSftpForm && email && (
+      {mode === 'api' && email && (
       <>
       <Banner variant="success">
         Connected as <MaskedEmail email={email} bold />
@@ -1114,11 +1127,6 @@ function UnlinkedState({
           Pick the Cloudways app this Local site should sync with.
           Once linked, you can push and pull with one click.
         </Text>
-      </div>
-      <div style={styles.row}>
-        <TextButton onClick={() => setShowSftpForm(true)}>
-          Don&rsquo;t see your app, or no API access? Link via SFTP instead →
-        </TextButton>
       </div>
 
       <div style={styles.row}>
