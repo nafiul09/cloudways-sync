@@ -81,9 +81,19 @@ export interface Ssh2SftpClientLike {
   stat(remotePath: string): Promise<{ size: number; modifyTime: number; isDirectory: boolean; isFile: boolean }>;
   get(remotePath: string, localPath: string | NodeJS.WritableStream): Promise<unknown>;
   put(local: string | NodeJS.ReadableStream | Buffer, remotePath: string): Promise<unknown>;
+  /** Parallel chunked download — much faster on high-RTT links. */
+  fastGet?(remotePath: string, localPath: string, options?: FastTransferOptions): Promise<unknown>;
+  /** Parallel chunked upload — much faster on high-RTT links. */
+  fastPut?(localPath: string, remotePath: string, options?: FastTransferOptions): Promise<unknown>;
   on(event: string, cb: (...args: unknown[]) => void): this;
   off?(event: string, cb: (...args: unknown[]) => void): this;
 }
+
+export type FastTransferOptions = {
+  concurrency?: number;
+  chunkSize?: number;
+  step?: (totalTransferred: number, chunk: number, total: number) => void;
+};
 
 export type SftpClientOptions = {
   /** Inject a client factory for tests. */
@@ -216,7 +226,15 @@ export class SftpClient {
     }
   }
 
-  /** Download a single file. Emits byte-level progress. */
+  /** Download a single file. Emits byte-level progress.
+   *
+   * Prefers `fastGet` (parallel chunked reads) over the single-stream
+   * `get(remotePath, writeStream)` path. Single-stream SFTP reads are
+   * RTT-bound at ~32 KB chunks (200–600 KB/s on a typical link to
+   * Cloudways), whereas FileZilla and other modern clients pipeline
+   * many chunks in flight to saturate the pipe. `fastGet` exposes the
+   * same behavior — concurrency + larger chunk size — and gives us
+   * 5–10× the throughput on the same connection. */
   async download(
     remotePath: string,
     localPath: string,
@@ -233,19 +251,22 @@ export class SftpClient {
       throw classifySftpError('download', err);
     }
 
+    opts.onProgress?.({ remotePath, localPath, bytesTransferred: 0, totalBytes: total });
+
+    if (typeof client.fastGet === 'function') {
+      await this.downloadViaFastGet(client, remotePath, localPath, total, opts);
+      return;
+    }
+
     const writeStream = fs.createWriteStream(localPath);
 
-    // Progress + stall detection via writeStream.bytesWritten polling.
-    // This is far more reliable than ssh2-sftp-client's 'download'
-    // event which silently fails to fire on many server/version combos
-    // (path resolution mismatches, event not wired, etc.).
+    // Fallback: single-stream get() with bytesWritten polling. Used by
+    // test fakes that don't expose fastGet.
     let lastBytesWritten = 0;
     let lastProgressAt = Date.now();
     let stallReason: string | undefined;
     const stallMs = this.stallTimeoutMs;
     const POLL_MS = 3_000;
-
-    opts.onProgress?.({ remotePath, localPath, bytesTransferred: 0, totalBytes: total });
 
     const pollTimer =
       stallMs > 0
@@ -296,12 +317,77 @@ export class SftpClient {
     }
   }
 
-  /** Upload a single local file. Uses a read-stream with bytesRead
-   * polling for progress — the ssh2-sftp-client `'upload'` event is
-   * unreliable on many Cloudways server configurations. When all bytes
-   * have been read and `put()` still hasn't resolved after a grace
-   * period, we treat the upload as complete (the underlying stream
-   * 'close' event sometimes never fires). */
+  private async downloadViaFastGet(
+    client: Ssh2SftpClientLike,
+    remotePath: string,
+    localPath: string,
+    total: number | undefined,
+    opts: TransferOptions,
+  ): Promise<void> {
+    const stallMs = this.stallTimeoutMs;
+    let transferred = 0;
+    let lastProgressAt = Date.now();
+    let stalled = false;
+    let stallTimer: ReturnType<typeof setInterval> | undefined;
+
+    const step = (totalTransferred: number, _chunk: number, _total: number): void => {
+      transferred = totalTransferred;
+      lastProgressAt = Date.now();
+      opts.onProgress?.({
+        remotePath,
+        localPath,
+        bytesTransferred: totalTransferred,
+        totalBytes: total,
+      });
+    };
+
+    if (stallMs > 0) {
+      stallTimer = setInterval(() => {
+        if (Date.now() - lastProgressAt >= stallMs) {
+          stalled = true;
+          clearInterval(stallTimer as NodeJS.Timeout);
+        }
+      }, 3_000);
+    }
+
+    try {
+      await client.fastGet!(remotePath, localPath, {
+        // 64-way concurrency × 32 KiB chunks ≈ 2 MiB in flight, which
+        // is what saturates a typical TCP window to a Cloudways box
+        // without triggering server-side flow-control oddities.
+        concurrency: 64,
+        chunkSize: 32_768,
+        step,
+      });
+      opts.onProgress?.({
+        remotePath,
+        localPath,
+        bytesTransferred: total ?? transferred,
+        totalBytes: total,
+      });
+    } catch (err) {
+      if (stalled) {
+        throw new RemoteError(
+          'SFTP_FAILED',
+          `SFTP transfer stalled (no bytes for ${Math.round(stallMs / 1000)}s): ${remotePath}`,
+          { retriable: true, detail: { remotePath, bytesTransferred: transferred, totalBytes: total } },
+        );
+      }
+      throw classifySftpError('download', err);
+    } finally {
+      if (stallTimer) clearInterval(stallTimer);
+    }
+  }
+
+  /** Upload a single local file. Prefers `fastPut` (parallel chunked
+   * writes) when available — same throughput rationale as `download`.
+   *
+   * Streaming-fallback path uses bytesRead polling for progress, since
+   * the ssh2-sftp-client `'upload'` event is unreliable on Cloudways
+   * server configs. When all bytes have been read and `put()` still
+   * hasn't resolved after a grace period, we treat the upload as
+   * complete (the underlying stream 'close' event sometimes never
+   * fires). */
   async upload(
     localPath: string,
     remotePath: string,
@@ -327,6 +413,11 @@ export class SftpClient {
     }
 
     opts.onProgress?.({ remotePath, localPath, bytesTransferred: 0, totalBytes: total });
+
+    if (typeof client.fastPut === 'function') {
+      await this.uploadViaFastPut(client, localPath, remotePath, total, opts);
+      return;
+    }
 
     const readStream = fs.createReadStream(localPath);
     let lastBytesRead = 0;
@@ -390,6 +481,65 @@ export class SftpClient {
       throw classifySftpError('upload', err);
     } finally {
       clearInterval(pollTimer);
+    }
+  }
+
+  private async uploadViaFastPut(
+    client: Ssh2SftpClientLike,
+    localPath: string,
+    remotePath: string,
+    total: number,
+    opts: TransferOptions,
+  ): Promise<void> {
+    const stallMs = this.stallTimeoutMs;
+    let transferred = 0;
+    let lastProgressAt = Date.now();
+    let stalled = false;
+    let stallTimer: ReturnType<typeof setInterval> | undefined;
+
+    const step = (totalTransferred: number, _chunk: number, _total: number): void => {
+      transferred = totalTransferred;
+      lastProgressAt = Date.now();
+      opts.onProgress?.({
+        remotePath,
+        localPath,
+        bytesTransferred: totalTransferred,
+        totalBytes: total,
+      });
+    };
+
+    if (stallMs > 0) {
+      stallTimer = setInterval(() => {
+        if (Date.now() - lastProgressAt >= stallMs) {
+          stalled = true;
+          clearInterval(stallTimer as NodeJS.Timeout);
+        }
+      }, 3_000);
+    }
+
+    try {
+      await client.fastPut!(localPath, remotePath, {
+        concurrency: 64,
+        chunkSize: 32_768,
+        step,
+      });
+      opts.onProgress?.({
+        remotePath,
+        localPath,
+        bytesTransferred: total,
+        totalBytes: total,
+      });
+    } catch (err) {
+      if (stalled) {
+        throw new RemoteError(
+          'SFTP_FAILED',
+          `SFTP upload stalled (no bytes for ${Math.round(stallMs / 1000)}s): ${remotePath}`,
+          { retriable: true, detail: { remotePath, bytesTransferred: transferred, totalBytes: total } },
+        );
+      }
+      throw classifySftpError('upload', err);
+    } finally {
+      if (stallTimer) clearInterval(stallTimer);
     }
   }
 
