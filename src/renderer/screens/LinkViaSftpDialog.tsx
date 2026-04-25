@@ -14,7 +14,7 @@
 // without touching Local's modal stack.
 
 import React, { useMemo, useState } from 'react';
-import { Banner, Button, Text, TextButton, Title } from '@getflywheel/local-components';
+import { Banner, Button, Text, TextButton } from '@getflywheel/local-components';
 import { ipcClient, IpcCallError } from '../ipcClient';
 import type {
   ProbeSftpResponse,
@@ -127,8 +127,7 @@ export function LinkViaSftpDialog({
   };
 
   return (
-    <section style={styles.wrap}>
-      <Title size="s" tag="h2">Link via SFTP</Title>
+    <section>
       <Text size="caption" style={styles.help}>
         Use the SSH/SFTP credentials shown in your Cloudways dashboard
         (Application Settings → SSH/SFTP). Cloudways Sync will verify
@@ -300,18 +299,10 @@ function Field({
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  wrap: {
-    padding: 16,
-    background: 'rgba(255,255,255,0.04)',
-    border: '1px solid rgba(255,255,255,0.08)',
-    borderRadius: 6,
-    marginTop: 16,
-  },
   help: {
     display: 'block',
     opacity: 0.6,
-    marginTop: 4,
-    marginBottom: 12,
+    marginBottom: 16,
     lineHeight: 1.4,
   },
   grid: {
