@@ -14,6 +14,7 @@ import { ipcClient, IpcCallError, subscribeJobProgress } from '../ipcClient';
 import { refreshSiteListIcons } from '../sidebar/injectSiteListIcons';
 import { showSyncModal, failSyncModal } from '../SyncModal';
 import { MaskedEmail } from '../components/MaskedEmail';
+import { LinkViaSftpDialog } from './LinkViaSftpDialog';
 import type {
   ApiSiteMapping,
   AppDetail,
@@ -275,11 +276,11 @@ export function SiteToolsPanel({ site }: { site: Site }): React.ReactElement {
         <Banner variant="error">Could not read connection status: {loadError}</Banner>
       ) : status === undefined || mapping === undefined ? (
         <div style={styles.center}><Spinner /></div>
-      ) : status.connected ? (
-        mapping ? (
-          <>
-            {unlinkError && <div style={styles.banner}><Banner variant="error">{unlinkError}</Banner></div>}
-            {isApiMapping(mapping) ? (
+      ) : mapping ? (
+        <>
+          {unlinkError && <div style={styles.banner}><Banner variant="error">{unlinkError}</Banner></div>}
+          {isApiMapping(mapping) ? (
+            status.connected ? (
               <LinkedState
                 site={site}
                 email={status.email}
@@ -301,32 +302,34 @@ export function SiteToolsPanel({ site }: { site: Site }): React.ReactElement {
                 }}
               />
             ) : (
-              <SftpLinkedState
-                email={status.email}
-                mapping={mapping}
-                onUnlink={() => {
-                  const previous = mapping;
-                  setUnlinkError(undefined);
-                  setMapping(null);
-                  ipcClient.unmapSite({ localSiteId: site.id })
-                    .then(() => { refreshSiteListIcons(); })
-                    .catch((err) => {
-                      setMapping(previous);
-                      setUnlinkError(err instanceof IpcCallError ? err.message : String(err));
-                    });
-                }}
-              />
-            )}
-          </>
-        ) : (
-          <UnlinkedState
-            site={site}
-            email={status.email}
-            onLinked={(m) => { setMapping(m); refreshSiteListIcons(); }}
-          />
-        )
+              // API-linked but the user disconnected. Show the badge but
+              // explain they need to reconnect to push/pull.
+              <ApiLinkedDisconnected mapping={mapping} />
+            )
+          ) : (
+            <SftpLinkedState
+              email={status.connected ? status.email : undefined}
+              mapping={mapping}
+              onUnlink={() => {
+                const previous = mapping;
+                setUnlinkError(undefined);
+                setMapping(null);
+                ipcClient.unmapSite({ localSiteId: site.id })
+                  .then(() => { refreshSiteListIcons(); })
+                  .catch((err) => {
+                    setMapping(previous);
+                    setUnlinkError(err instanceof IpcCallError ? err.message : String(err));
+                  });
+              }}
+            />
+          )}
+        </>
       ) : (
-        <DisconnectedState />
+        <UnlinkedState
+          site={site}
+          email={status.connected ? status.email : undefined}
+          onLinked={(m) => { setMapping(m); refreshSiteListIcons(); }}
+        />
       )}
     </div>
   );
@@ -687,15 +690,19 @@ function SftpLinkedState({
   mapping,
   onUnlink,
 }: {
-  email: string;
+  email?: string;
   mapping: SftpSiteMapping;
   onUnlink: () => void;
 }): React.ReactElement {
   return (
     <section>
-      <Banner variant="success">
-        Connected as <MaskedEmail email={email} bold />
-      </Banner>
+      {email ? (
+        <Banner variant="success">
+          Connected as <MaskedEmail email={email} bold />
+        </Banner>
+      ) : (
+        <Banner variant="success">Linked via SFTP — no Cloudways API key needed.</Banner>
+      )}
       <div style={styles.linkedInfo}>
         <div style={styles.linkedHeader}>
           <Text style={styles.linkedHeading}>Linked via SFTP</Text>
@@ -712,11 +719,52 @@ function SftpLinkedState({
               <Text style={{ ...styles.linkedValue, color: '#51bb7b' }}>{mapping.remoteUrl}</Text>
             </>
           )}
+          {mapping.webRoot && (
+            <>
+              <Text size="caption" style={styles.linkedLabel}>Path</Text>
+              <Text style={styles.linkedValue}>{mapping.webRoot}</Text>
+            </>
+          )}
         </div>
       </div>
       <Banner variant="warning">
         Push and pull over SFTP are coming online with the SFTP-only link mode rollout.
       </Banner>
+    </section>
+  );
+}
+
+// Placeholder for API-linked sites when the user disconnects from
+// Cloudways. We keep showing the link metadata but disable sync until
+// they reconnect.
+function ApiLinkedDisconnected({ mapping }: { mapping: ApiSiteMapping }): React.ReactElement {
+  return (
+    <section>
+      <Banner variant="warning">
+        This site is linked to Cloudways via API, but Cloudways Sync isn't
+        currently connected. Open the sidebar and connect to push or pull.
+      </Banner>
+      <div style={styles.linkedInfo}>
+        <div style={styles.linkedHeader}>
+          <Text style={styles.linkedHeading}>Linked via API</Text>
+        </div>
+        <div style={styles.linkedGrid}>
+          <Text size="caption" style={styles.linkedLabel}>App</Text>
+          <Text style={styles.linkedValue}>{mapping.appLabel}</Text>
+          {mapping.serverLabel && (
+            <>
+              <Text size="caption" style={styles.linkedLabel}>Server</Text>
+              <Text style={styles.linkedValue}>{mapping.serverLabel}</Text>
+            </>
+          )}
+          {mapping.remoteUrl && (
+            <>
+              <Text size="caption" style={styles.linkedLabel}>URL</Text>
+              <Text style={{ ...styles.linkedValue, color: '#51bb7b' }}>{mapping.remoteUrl}</Text>
+            </>
+          )}
+        </div>
+      </div>
     </section>
   );
 }
@@ -729,9 +777,10 @@ function UnlinkedState({
   onLinked,
 }: {
   site: Site;
-  email: string;
+  email?: string;
   onLinked: (mapping: SiteMapping) => void;
 }): React.ReactElement {
+  const [showSftpForm, setShowSftpForm] = useState(false);
   const [servers, setServers] = useState<ServerSummary[] | undefined>();
   const [apps, setApps] = useState<AppSummary[] | undefined>();
   const [selectedServerId, setSelectedServerId] = useState<number | undefined>();
@@ -750,12 +799,13 @@ function UnlinkedState({
   const canLink = Boolean(appDetail?.sftp.password && smokeResult);
 
   useEffect(() => {
+    if (!email) return; // SFTP-only path: skip API calls.
     let cancelled = false;
     ipcClient.listServers()
       .then((res) => { if (!cancelled) setServers(res.servers); })
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); });
     return () => { cancelled = true; };
-  }, []);
+  }, [email]);
 
   useEffect(() => {
     if (!selectedServerId) { setApps(undefined); return; }
@@ -863,6 +913,39 @@ function UnlinkedState({
 
   return (
     <section>
+      {showSftpForm && (
+        <LinkViaSftpDialog
+          localSiteId={site.id}
+          defaultLabel={site.name}
+          onCancel={() => setShowSftpForm(false)}
+          onLinked={(mapping) => {
+            setShowSftpForm(false);
+            onLinked(mapping);
+          }}
+        />
+      )}
+
+      {!showSftpForm && !email && (
+        <>
+          <Banner variant="warning">
+            Cloudways Sync isn&rsquo;t connected to a Cloudways account, so the
+            server / app picker is unavailable. You can still link this site
+            via SFTP — open the form below.
+          </Banner>
+          <div style={styles.row}>
+            <Button onClick={() => setShowSftpForm(true)}>Link via SFTP…</Button>
+          </div>
+          <div style={styles.row}>
+            <Text size="caption" style={{ opacity: 0.6 }}>
+              Open the Cloudways Sync sidebar to connect with an API key if
+              you have one — both modes can coexist.
+            </Text>
+          </div>
+        </>
+      )}
+
+      {!showSftpForm && email && (
+      <>
       <Banner variant="success">
         Connected as <MaskedEmail email={email} bold />
       </Banner>
@@ -875,6 +958,11 @@ function UnlinkedState({
           Pick the Cloudways app this Local site should sync with.
           Once linked, you can push and pull with one click.
         </Text>
+      </div>
+      <div style={styles.row}>
+        <TextButton onClick={() => setShowSftpForm(true)}>
+          Don&rsquo;t see your app, or no API access? Link via SFTP instead →
+        </TextButton>
       </div>
 
       <div style={styles.row}>
@@ -1015,22 +1103,8 @@ function UnlinkedState({
       )}
 
       {error && <div style={styles.banner}><Banner variant="error">{error}</Banner></div>}
-    </section>
-  );
-}
-
-// --- Disconnected ---
-
-function DisconnectedState(): React.ReactElement {
-  return (
-    <section>
-      <Banner variant="warning">Cloudways Sync isn&rsquo;t connected to a Cloudways account yet.</Banner>
-      <div style={styles.row}>
-        <Text>
-          Click the <strong>Cloudways Sync</strong> icon in Local&rsquo;s sidebar to connect your
-          Cloudways API key.
-        </Text>
-      </div>
+      </>
+      )}
     </section>
   );
 }
