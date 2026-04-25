@@ -7,8 +7,11 @@ import { PushOrchestrator, type ExecLocalFn } from '../../src/main/sync/PushOrch
 import { UndoLedger } from '../../src/main/sync/UndoLedger';
 import type { PushPlan } from '../../src/main/sync/types';
 import type { ApiClient } from '../../src/main/cloudways/ApiClient';
+import { ApiAppLink, SftpAppLink } from '../../src/main/sync/AppLink';
 import type { SftpClient } from '../../src/main/remote/SftpClient';
 import type { SshClient } from '../../src/main/remote/SshClient';
+import type { SftpCredentialStore } from '../../src/main/credentials';
+import type { ApiSiteMapping, SftpSiteMapping } from '../../src/shared/ipcTypes';
 
 const tmpRoots: string[] = [];
 
@@ -27,6 +30,7 @@ function tmpDir(): string {
 function makePlan(overrides?: Partial<PushPlan>): PushPlan {
   return {
     id: 'push_test',
+    linkMode: 'api',
     serverId: 1,
     appId: 10,
     localSiteId: 'local-1',
@@ -45,6 +49,19 @@ function makePlan(overrides?: Partial<PushPlan>): PushPlan {
     steps: [],
     ...overrides,
   };
+}
+
+function makeApiLink(client: ApiClient): ApiAppLink {
+  const mapping: ApiSiteMapping = {
+    linkMode: 'api',
+    localSiteId: 'local-1',
+    serverId: 1,
+    appId: 10,
+    appLabel: 'Remote WP',
+    remoteUrl: 'https://example.com',
+    createdAt: new Date().toISOString(),
+  };
+  return new ApiAppLink(mapping, client);
 }
 
 function makeClient(): ApiClient {
@@ -169,7 +186,7 @@ describe('PushOrchestrator', () => {
     const progress: string[] = [];
 
     const orchestrator = new PushOrchestrator({
-      client: makeClient(),
+      link: makeApiLink(makeClient()),
       undoLedger,
       userDataDir,
       sshFactory: () => fakeSsh as unknown as SshClient,
@@ -228,7 +245,7 @@ describe('PushOrchestrator', () => {
     const progress: string[] = [];
 
     const orchestrator = new PushOrchestrator({
-      client: makeClient(),
+      link: makeApiLink(makeClient()),
       undoLedger,
       userDataDir,
       sshFactory: () => fakeSsh as unknown as SshClient,
@@ -275,7 +292,7 @@ describe('PushOrchestrator', () => {
     const progress: string[] = [];
 
     const orchestrator = new PushOrchestrator({
-      client: makeClient(),
+      link: makeApiLink(makeClient()),
       undoLedger,
       userDataDir,
       sshFactory: () => fakeSsh as unknown as SshClient,
@@ -308,5 +325,65 @@ describe('PushOrchestrator', () => {
     // Only DB dump uploaded, no content archive
     expect(fakeSftp.uploads).toHaveLength(1);
     expect(fakeSftp.uploads[0]?.remotePath).toContain('.sql.gz');
+  });
+
+  it('SFTP-mode push captures a local-tar snapshot in place of a Cloudways backup', async () => {
+    const userDataDir = tmpDir();
+    const webRootPath = createLocalWebroot();
+    const fakeSsh = new FakeSsh();
+    const fakeSftp = new FakeSftp();
+    const undoLedger = new UndoLedger(userDataDir);
+    const progress: string[] = [];
+
+    const sftpMapping: SftpSiteMapping = {
+      linkMode: 'sftp',
+      localSiteId: 'local-1',
+      appLabel: 'Remote SFTP App',
+      host: '203.0.113.10',
+      port: 22,
+      username: 'master',
+      webRoot: '/home/master/applications/abcdef/public_html',
+      createdAt: new Date().toISOString(),
+    };
+    const sftpCreds = {
+      get: async () => 'pw',
+      set: async () => undefined,
+      delete: async () => undefined,
+      clear: async () => undefined,
+    } as unknown as SftpCredentialStore;
+    const link = new SftpAppLink(sftpMapping, sftpCreds);
+
+    const orchestrator = new PushOrchestrator({
+      link,
+      undoLedger,
+      userDataDir,
+      sshFactory: () => fakeSsh as unknown as SshClient,
+      sftpFactory: () => fakeSftp as unknown as SftpClient,
+      execLocal: fakeExecLocal(),
+      emitProgress: (event) => progress.push(`${event.stepId}:${event.status}`),
+    });
+
+    const plan = makePlan({
+      linkMode: 'sftp',
+      serverId: undefined,
+      appId: undefined,
+      webRootPath,
+    });
+    const result = await orchestrator.run(plan);
+    expect(result.status).toBe('success');
+
+    // No Cloudways API call happened. The backup step ran the local-tar
+    // path: it ran a `mkdir -p` for the snapshot dir + a `tar -czf`.
+    expect(fakeSsh.commands.some((c) => c.includes('.cwsync-snapshots'))).toBe(true);
+    expect(fakeSsh.commands.some((c) => c.startsWith('tar -czf') && c.includes('.cwsync-snapshots'))).toBe(true);
+
+    // Undo record carries SFTP-mode discriminator + a snapshot pointer.
+    const records = await undoLedger.list();
+    expect(records).toHaveLength(1);
+    const rec = records[0]!;
+    expect(rec.linkMode).toBe('sftp');
+    expect(rec.localSiteId).toBe('local-1');
+    expect(rec.snapshot?.kind).toBe('local-tar');
+    expect(rec.snapshot?.remoteContentTarPath).toContain('.cwsync-snapshots/');
   });
 });

@@ -73,6 +73,7 @@ export class JobStore {
     const includes: PushIncludes = { ...DEFAULT_INCLUDES, ...req.includes };
     const plan: PushPlan = {
       id: `push_${randomUUID()}`,
+      linkMode: req.linkMode ?? 'api',
       serverId: req.serverId,
       appId: req.appId,
       localSiteId: req.localSiteId,

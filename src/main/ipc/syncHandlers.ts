@@ -10,6 +10,8 @@ import { PullOrchestrator } from '../sync/PullOrchestrator';
 import { PushOrchestrator } from '../sync/PushOrchestrator';
 import { SiteMapper } from '../sync/SiteMapper';
 import { UndoLedger } from '../sync/UndoLedger';
+import { type AppLink, appLinkFor } from '../sync/AppLink';
+import { restoreFromLocalSnapshot } from '../sync/snapshotUndo';
 import {
   CHANNELS,
   type CancelJobRequest,
@@ -22,6 +24,7 @@ import {
   type ListMappingsResponse,
   type JobDoneEvent,
   type JobProgressEvent,
+  type ApiSiteMapping,
   type LinkViaSftpRequest,
   type LinkViaSftpResponse,
   type ListUndoResponse,
@@ -119,8 +122,8 @@ export function registerSyncHandlers({
   addIpcAsyncListener(CHANNELS.PLAN_PUSH, (...args: unknown[]) => {
     const payload = args[0] as PlanPushRequest | undefined;
     return runHandler<PlanPushResponse>(async () => {
-      if (!payload || typeof payload.serverId !== 'number' || typeof payload.appId !== 'number') {
-        throw new CloudwaysError('AUTH_INVALID', 'serverId and appId are required.', { retriable: false });
+      if (!payload) {
+        throw new CloudwaysError('AUTH_INVALID', 'Missing push payload.', { retriable: false });
       }
       if (!payload.localSiteId?.trim()) {
         throw new CloudwaysError('AUTH_INVALID', 'localSiteId is required.', { retriable: false });
@@ -131,11 +134,21 @@ export function registerSyncHandlers({
       if (!payload.webRootPath?.trim()) {
         throw new CloudwaysError('AUTH_INVALID', 'webRootPath is required.', { retriable: false });
       }
-      // Mode B: appId === 0 requires a newAppLabel
-      if (payload.appId === 0 && !payload.newAppLabel?.trim()) {
-        throw new CloudwaysError('AUTH_INVALID', 'newAppLabel is required when appId is 0 (Mode B).', {
-          retriable: false,
-        });
+      const linkMode = payload.linkMode ?? 'api';
+      if (linkMode === 'api') {
+        if (typeof payload.serverId !== 'number' || typeof payload.appId !== 'number') {
+          throw new CloudwaysError(
+            'AUTH_INVALID',
+            'serverId and appId are required for API-mode push.',
+            { retriable: false },
+          );
+        }
+        // Mode B: appId === 0 requires a newAppLabel
+        if (payload.appId === 0 && !payload.newAppLabel?.trim()) {
+          throw new CloudwaysError('AUTH_INVALID', 'newAppLabel is required when appId is 0 (Mode B).', {
+            retriable: false,
+          });
+        }
       }
       const plan = jobs.createPushPlan(payload);
       return { planId: plan.id, steps: plan.steps };
@@ -184,48 +197,82 @@ export function registerSyncHandlers({
 
       const pushPlan = jobs.getPushPlan(payload.planId);
       if (pushPlan) {
-        const client = connection.requireClient();
-
-        // Mode B: provision a new app before running the push
+        // Resolve the AppLink for this plan. API-mode plans either
+        // reference an existing mapping or (Mode B) provision a new
+        // app on the fly. SFTP-mode plans must already have a mapping
+        // saved by the Link via SFTP flow.
+        let link: AppLink;
         let newlyCreatedAppId: number | undefined;
-        if (pushPlan.appId === 0) {
-          const appLabel = pushPlan.newAppLabel;
-          if (!appLabel) {
-            throw new CloudwaysError('AUTH_INVALID', 'newAppLabel is required for Mode B push.', {
-              retriable: false,
-            });
+
+        if (pushPlan.linkMode === 'sftp') {
+          const mapping = await siteMapper.get(pushPlan.localSiteId);
+          if (!mapping || mapping.linkMode !== 'sftp') {
+            throw new CloudwaysError(
+              'OPERATION_FAILED',
+              'No SFTP mapping found for this site. Re-link via SFTP and try again.',
+              { retriable: false },
+            );
+          }
+          if (!sftpCreds) {
+            throw new EncryptionUnavailableError();
+          }
+          link = appLinkFor(mapping, { sftpCreds });
+        } else {
+          const client = connection.requireClient();
+
+          // Mode B: provision a new app before running the push
+          if (pushPlan.appId === 0) {
+            const appLabel = pushPlan.newAppLabel;
+            if (!appLabel) {
+              throw new CloudwaysError('AUTH_INVALID', 'newAppLabel is required for Mode B push.', {
+                retriable: false,
+              });
+            }
+
+            // Create the app
+            const createOpId = await client.createApp(pushPlan.serverId as number, appLabel);
+            await client.waitForOperation(createOpId);
+
+            // Re-fetch servers to find the newly-created app
+            const servers = await client.listServers();
+            const server = servers.find((s) => s.id === pushPlan.serverId);
+            if (!server) {
+              throw new CloudwaysError('OPERATION_FAILED', `Server ${pushPlan.serverId} not found after app creation.`, {
+                retriable: false,
+              });
+            }
+            // The new app is the one whose label matches and wasn't in the plan
+            const newApp = server.apps.find((a) => a.label === appLabel);
+            if (!newApp) {
+              throw new CloudwaysError('OPERATION_FAILED', `Newly created app "${appLabel}" not found on server.`, {
+                retriable: false,
+              });
+            }
+
+            // Update the plan's appId with the real value
+            pushPlan.appId = newApp.id;
+            newlyCreatedAppId = newApp.id;
           }
 
-          // Create the app
-          const createOpId = await client.createApp(pushPlan.serverId, appLabel);
-          await client.waitForOperation(createOpId);
-
-          // Re-fetch servers to find the newly-created app
-          const servers = await client.listServers();
-          const server = servers.find((s) => s.id === pushPlan.serverId);
-          if (!server) {
-            throw new CloudwaysError('OPERATION_FAILED', `Server ${pushPlan.serverId} not found after app creation.`, {
-              retriable: false,
-            });
-          }
-          // The new app is the one whose label matches and wasn't in the plan
-          const newApp = server.apps.find((a) => a.label === appLabel);
-          if (!newApp) {
-            throw new CloudwaysError('OPERATION_FAILED', `Newly created app "${appLabel}" not found on server.`, {
-              retriable: false,
-            });
-          }
-
-          // Update the plan's appId with the real value
-          pushPlan.appId = newApp.id;
-          newlyCreatedAppId = newApp.id;
+          // Synthesize an ApiSiteMapping for the orchestrator. The
+          // canonical mapping (with full label/remoteUrl) is written
+          // only after Mode B success below.
+          const apiMapping: ApiSiteMapping = {
+            linkMode: 'api',
+            localSiteId: pushPlan.localSiteId,
+            serverId: pushPlan.serverId as number,
+            appId: pushPlan.appId as number,
+            appLabel: pushPlan.newAppLabel ?? '',
+            remoteUrl: '',
+            createdAt: new Date().toISOString(),
+          };
+          link = appLinkFor(apiMapping, { client, appPasswords });
         }
 
         const orchestrator = new PushOrchestrator({
-          client,
+          link,
           undoLedger,
           userDataDir,
-          getAppPassword: appPasswords ? (serverId, appId) => appPasswords.get(serverId, appId) : undefined,
           localDbDump: async (localSiteId, destination) => {
             const site = services.siteData.getSite(localSiteId);
             if (!site) throw new Error(`Local site "${localSiteId}" not found.`);
@@ -264,7 +311,7 @@ export function registerSyncHandlers({
           const mapping: SiteMapping = {
             linkMode: 'api',
             localSiteId: pushPlan.localSiteId,
-            serverId: pushPlan.serverId,
+            serverId: pushPlan.serverId as number,
             appId: newlyCreatedAppId,
             appLabel: pushPlan.newAppLabel as string,
             remoteUrl: result.localUrl ?? '',
@@ -317,7 +364,54 @@ export function registerSyncHandlers({
           retriable: false,
         });
       }
+
+      // SFTP-mode records carry a local-tar snapshot pointer instead
+      // of a Cloudways backup id. Restore by reapplying the snapshot
+      // through the AppLink built from the saved mapping.
+      if (record.linkMode === 'sftp') {
+        if (!record.snapshot) {
+          throw new CloudwaysError(
+            'OPERATION_FAILED',
+            'This SFTP-mode push has no snapshot. Undo is unavailable.',
+            { retriable: false },
+          );
+        }
+        if (!record.localSiteId) {
+          throw new CloudwaysError(
+            'OPERATION_FAILED',
+            'Undo record is missing localSiteId. Re-link the site and try again.',
+            { retriable: false },
+          );
+        }
+        const mapping = await siteMapper.get(record.localSiteId);
+        if (!mapping || mapping.linkMode !== 'sftp') {
+          throw new CloudwaysError(
+            'OPERATION_FAILED',
+            'No SFTP mapping found for this site. Re-link via SFTP to enable undo.',
+            { retriable: false },
+          );
+        }
+        if (!sftpCreds) throw new EncryptionUnavailableError();
+        const link = appLinkFor(mapping, { sftpCreds });
+        await restoreFromLocalSnapshot({
+          link,
+          snapshot: record.snapshot,
+          jobId: record.jobId,
+          emitProgress: (event) => sendIPCEvent(CHANNELS.JOB_PROGRESS, event),
+        });
+        await undoLedger.markUndone(record.id);
+        return { restored: true };
+      }
+
+      // API-mode (default for legacy records).
       const client = connection.requireClient();
+      if (typeof record.serverId !== 'number' || typeof record.appId !== 'number') {
+        throw new CloudwaysError(
+          'OPERATION_FAILED',
+          'API-mode undo record is missing serverId/appId.',
+          { retriable: false },
+        );
+      }
       const operationId = await client.restoreApp(record.serverId, record.appId);
       await client.waitForOperation(operationId);
       await undoLedger.markUndone(record.id);

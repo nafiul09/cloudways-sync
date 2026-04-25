@@ -308,6 +308,7 @@ export function SiteToolsPanel({ site }: { site: Site }): React.ReactElement {
             )
           ) : (
             <SftpLinkedState
+              site={site}
               email={status.connected ? status.email : undefined}
               mapping={mapping}
               onUnlink={() => {
@@ -686,19 +687,102 @@ function LinkedState({
 // feature lands behind the scenes.
 
 function SftpLinkedState({
+  site,
   email,
   mapping,
   onUnlink,
 }: {
+  site: Site;
   email?: string;
   mapping: SftpSiteMapping;
   onUnlink: () => void;
 }): React.ReactElement {
+  // SFTP mode supports push + undo today (Phase 3). Pull lands in Phase 4.
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushStep, setPushStep] = useState<SyncStep | undefined>();
+  const [pushIncludes, setPushIncludes] = useState<PushIncludes>({ ...DEFAULT_INCLUDES });
+  const [lastPushUndoId, setLastPushUndoId] = useState<string | undefined>();
+  const [undoBusy, setUndoBusy] = useState(false);
+  const [undoResult, setUndoResult] = useState<string | undefined>();
+  const [undoErr, setUndoErr] = useState<string | undefined>();
+
+  useEffect(() => {
+    const unsubscribe = subscribeJobProgress((event: JobProgressEvent) => {
+      if (!pushBusy) return;
+      const percent =
+        typeof event.totalBytes === 'number' &&
+        event.totalBytes > 0 &&
+        typeof event.bytesTransferred === 'number'
+          ? Math.min(100, Math.round((event.bytesTransferred / event.totalBytes) * 100))
+          : undefined;
+      const step: SyncStep = { stepId: event.stepId, percent, detail: event.detail };
+      if (event.status === 'running') setPushStep(step);
+      else if (event.status === 'success' || event.status === 'failed') setPushStep(undefined);
+    });
+    return unsubscribe;
+  }, [pushBusy]);
+
+  const runPush = async () => {
+    setPushBusy(true);
+    setPushStep(undefined);
+    setLastPushUndoId(undefined);
+    setUndoErr(undefined);
+    setUndoResult(undefined);
+    showSyncModal('push', mapping.appLabel);
+    try {
+      const plan = await ipcClient.planPush({
+        linkMode: 'sftp',
+        localSiteId: site.id,
+        localUrl: site.url || `http://${site.domain}`,
+        webRootPath: site.paths?.webRoot || `${site.path}/app/public`,
+        includes: pushIncludes,
+      });
+      await ipcClient.runJob({ planId: plan.planId });
+      try {
+        const undos = await ipcClient.listUndo();
+        const latest = undos.records.find(
+          (r) => r.localSiteId === site.id && !r.undoneAt,
+        );
+        if (latest) setLastPushUndoId(latest.id);
+      } catch { /* non-fatal */ }
+    } catch (e) {
+      failSyncModal(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPushBusy(false);
+      setPushStep(undefined);
+    }
+  };
+
+  const runUndo = async () => {
+    if (!lastPushUndoId) return;
+    setUndoBusy(true);
+    setUndoErr(undefined);
+    setUndoResult(undefined);
+    try {
+      await ipcClient.undoPush({ recordId: lastPushUndoId });
+      setUndoResult('Undo completed — remote site restored from local snapshot.');
+      setLastPushUndoId(undefined);
+    } catch (e) {
+      setUndoErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setUndoBusy(false);
+    }
+  };
+
+  const pushLabel = (() => {
+    if (!pushBusy) return 'Push to Cloudways (SFTP)';
+    if (!pushStep) return 'Pushing…';
+    const label = PUSH_STEP_LABELS[pushStep.stepId] ?? pushStep.stepId;
+    return pushStep.percent != null
+      ? `Pushing — ${label} (${pushStep.percent}%)`
+      : `Pushing — ${label}`;
+  })();
+
   return (
     <section>
       {email ? (
         <Banner variant="success">
-          Connected as <MaskedEmail email={email} bold />
+          Connected as <MaskedEmail email={email} bold /> — also linked via SFTP
         </Banner>
       ) : (
         <Banner variant="success">Linked via SFTP — no Cloudways API key needed.</Banner>
@@ -727,8 +811,32 @@ function SftpLinkedState({
           )}
         </div>
       </div>
-      <Banner variant="warning">
-        Push and pull over SFTP are coming online with the SFTP-only link mode rollout.
+
+      {pushBusy && pushStep?.detail && (
+        <div style={{ marginBottom: 8, fontSize: 11, opacity: 0.65 }}>
+          {pushStep.detail}
+        </div>
+      )}
+      {!pushBusy && (
+        <SelectivePanel heading="Include in push" includes={pushIncludes} onChange={setPushIncludes} />
+      )}
+      {undoErr && <div style={styles.banner}><Banner variant="error">{undoErr}</Banner></div>}
+      {undoResult && <div style={styles.banner}><Banner variant="success">{undoResult}</Banner></div>}
+
+      <div style={styles.actionBar}>
+        <Button onClick={runPush} disabled={pushBusy || undoBusy}>
+          {pushLabel}
+        </Button>
+        {lastPushUndoId && !pushBusy && (
+          <Button onClick={runUndo} disabled={undoBusy} style={{ marginLeft: 8 }}>
+            {undoBusy ? 'Restoring…' : 'Undo last push (local snapshot)'}
+          </Button>
+        )}
+      </div>
+
+      <Banner variant="warning" style={{ marginTop: 12 }}>
+        Pull over SFTP is coming in a future update. For now, push from
+        this Local site to your linked Cloudways app.
       </Banner>
     </section>
   );
