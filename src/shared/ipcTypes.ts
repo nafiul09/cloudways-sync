@@ -38,6 +38,10 @@ export const CHANNELS = {
   GET_MAPPING_BY_APP: 'cs:getMappingByApp',
   LIST_MAPPINGS: 'cs:listMappings',
 
+  // SFTP-only link mode
+  PROBE_SFTP: 'cs:probeSftp',
+  LINK_VIA_SFTP: 'cs:linkViaSftp',
+
   // Breeze plugin detection
   DETECT_BREEZE: 'cs:detectBreeze',
 } as const;
@@ -372,3 +376,66 @@ export type GetMappingByAppRequest = { serverId: number; appId: number };
 export type GetMappingByAppResponse = { mapping: SiteMapping | null };
 
 export type ListMappingsResponse = { mappings: SiteMapping[] };
+
+// --- SFTP-only link mode: probe + link ---
+
+export type ProbeSftpRequest = {
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+  /** When the probe returned multiple candidates, ask again with a pick. */
+  pickedSysUser?: string;
+};
+
+export type ProbeSftpCandidate = {
+  sysUser: string;
+  webRoot: string;
+};
+
+export type ProbeSftpErrorCode =
+  | 'SSH_AUTH_FAILED'
+  | 'SSH_NETWORK'
+  | 'SSH_TIMEOUT'
+  | 'SSH_CLOSED'
+  | 'SFTP_MULTIPLE_APPS'
+  | 'WP_NOT_FOUND'
+  | 'UNKNOWN';
+
+export type ProbeSftpResponse =
+  | {
+      ok: true;
+      webRoot: string;
+      sysUser: string;
+      wpCliAvailable: boolean;
+      detectedSiteUrl: string | null;
+      phpVersion: string | null;
+      candidates: ProbeSftpCandidate[];
+    }
+  | {
+      ok: false;
+      code: ProbeSftpErrorCode;
+      message: string;
+      candidates?: ProbeSftpCandidate[];
+    };
+
+/**
+ * Re-runs the probe (defence-in-depth — the renderer can't be trusted
+ * to have probed first), then writes both the encrypted password and
+ * the SFTP mapping. Returns the persisted mapping.
+ */
+export type LinkViaSftpRequest = {
+  localSiteId: string;
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+  /** Human-friendly label shown in Site Tools panel. */
+  appLabel: string;
+  /** Optional; rendered as a link in Tools panel ("Open on web"). */
+  remoteUrl?: string;
+  /** Picked sys_user when the probe returned multiple candidates. */
+  pickedSysUser?: string;
+};
+
+export type LinkViaSftpResponse = { mapping: SftpSiteMapping };

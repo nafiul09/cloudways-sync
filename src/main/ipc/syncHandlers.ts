@@ -2,6 +2,7 @@ import type { ServiceContainerServices } from '@getflywheel/local/main';
 import { CloudwaysError } from '../cloudways/errors';
 import { AppPasswordStore, EncryptionUnavailableError, SftpCredentialStore } from '../credentials';
 import { RemoteError } from '../remote/errors';
+import { probeSftp } from '../connection/sftpProbe';
 import type { ConnectionService } from '../connection/service';
 import { JobStore } from '../sync/JobStore';
 import { LocalSiteImporter } from '../sync/LocalSiteImporter';
@@ -21,6 +22,8 @@ import {
   type ListMappingsResponse,
   type JobDoneEvent,
   type JobProgressEvent,
+  type LinkViaSftpRequest,
+  type LinkViaSftpResponse,
   type ListUndoResponse,
   type MapSiteRequest,
   type MapSiteResponse,
@@ -28,9 +31,12 @@ import {
   type PlanPullResponse,
   type PlanPushRequest,
   type PlanPushResponse,
+  type ProbeSftpRequest,
+  type ProbeSftpResponse,
   type RunJobRequest,
   type RunJobResponse,
   type SerializedError,
+  type SftpSiteMapping,
   type SiteMapping,
   type UnmapSiteRequest,
   type UnmapSiteResponse,
@@ -403,4 +409,106 @@ export function registerSyncHandlers({
       return { mappings };
     });
   });
+
+  // --- SFTP-only link mode handlers ---
+
+  addIpcAsyncListener(CHANNELS.PROBE_SFTP, (...args: unknown[]) => {
+    const payload = args[0] as ProbeSftpRequest | undefined;
+    return runHandler<ProbeSftpResponse>(async () => {
+      validateSftpProbePayload(payload);
+      const result = await probeSftp(
+        {
+          host: payload!.host.trim(),
+          port: payload!.port,
+          username: payload!.username.trim(),
+          password: payload!.password,
+        },
+        payload!.pickedSysUser ? { pickedSysUser: payload!.pickedSysUser } : {},
+      );
+      return result;
+    });
+  });
+
+  addIpcAsyncListener(CHANNELS.LINK_VIA_SFTP, (...args: unknown[]) => {
+    const payload = args[0] as LinkViaSftpRequest | undefined;
+    return runHandler<LinkViaSftpResponse>(async () => {
+      if (!payload?.localSiteId?.trim()) {
+        throw new CloudwaysError('AUTH_INVALID', 'localSiteId is required.', { retriable: false });
+      }
+      if (!payload.appLabel?.trim()) {
+        throw new CloudwaysError('AUTH_INVALID', 'appLabel is required.', { retriable: false });
+      }
+      validateSftpProbePayload(payload);
+      if (!sftpCreds) {
+        throw new EncryptionUnavailableError();
+      }
+
+      // Defence in depth: re-probe before persisting so we never write a
+      // mapping that points at credentials we couldn't actually verify.
+      const probe = await probeSftp(
+        {
+          host: payload.host.trim(),
+          port: payload.port,
+          username: payload.username.trim(),
+          password: payload.password,
+        },
+        payload.pickedSysUser ? { pickedSysUser: payload.pickedSysUser } : {},
+      );
+      if (!probe.ok) {
+        // Map probe codes that line up with RemoteError directly, then
+        // fall back to a generic CloudwaysError so the message and the
+        // probe's own code still reach the renderer via `detail`.
+        switch (probe.code) {
+          case 'SSH_AUTH_FAILED':
+          case 'SSH_NETWORK':
+          case 'SSH_TIMEOUT':
+          case 'SSH_CLOSED':
+            throw new RemoteError(probe.code, probe.message, {
+              retriable: probe.code !== 'SSH_AUTH_FAILED',
+              detail: { probeCode: probe.code, candidates: probe.candidates },
+            });
+          default:
+            throw new CloudwaysError('OPERATION_FAILED', probe.message, {
+              retriable: false,
+              detail: { probeCode: probe.code, candidates: probe.candidates },
+            });
+        }
+      }
+
+      await sftpCreds.set(payload.localSiteId, payload.password);
+
+      const mapping: SftpSiteMapping = {
+        linkMode: 'sftp',
+        localSiteId: payload.localSiteId,
+        appLabel: payload.appLabel,
+        host: payload.host.trim(),
+        port: payload.port,
+        username: payload.username.trim(),
+        webRoot: probe.webRoot,
+        detectedSiteUrl: probe.detectedSiteUrl ?? undefined,
+        remoteUrl: payload.remoteUrl?.trim() || probe.detectedSiteUrl || undefined,
+        createdAt: new Date().toISOString(),
+      };
+      await siteMapper.set(mapping);
+      return { mapping };
+    });
+  });
+}
+
+function validateSftpProbePayload(payload: ProbeSftpRequest | undefined): void {
+  if (!payload) {
+    throw new CloudwaysError('AUTH_INVALID', 'Probe payload is required.', { retriable: false });
+  }
+  if (!payload.host?.trim()) {
+    throw new CloudwaysError('AUTH_INVALID', 'host is required.', { retriable: false });
+  }
+  if (typeof payload.port !== 'number' || !Number.isFinite(payload.port) || payload.port <= 0) {
+    throw new CloudwaysError('AUTH_INVALID', 'port must be a positive number.', { retriable: false });
+  }
+  if (!payload.username?.trim()) {
+    throw new CloudwaysError('AUTH_INVALID', 'username is required.', { retriable: false });
+  }
+  if (!payload.password) {
+    throw new CloudwaysError('AUTH_INVALID', 'password is required.', { retriable: false });
+  }
 }
