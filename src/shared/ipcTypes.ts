@@ -293,20 +293,62 @@ export type UndoPushResponse = { restored: boolean };
 
 // --- Phase 8: Site mapping ---
 
-export type SiteMapping = {
+/**
+ * Common fields shared by both link modes. `linkMode` is the
+ * discriminator: 'api' mappings carry serverId/appId and route through
+ * the Cloudways API client; 'sftp' mappings carry direct SSH/SFTP
+ * connection details and bypass the API entirely.
+ *
+ * Legacy mappings (written before this field existed) are migrated
+ * to `linkMode: 'api'` on read by SiteMapper.
+ */
+export type SiteMappingBase = {
   localSiteId: string;
-  serverId: number;
-  appId: number;
   appLabel: string;
   /** Human-readable server name (e.g. "LiveServer"). */
   serverLabel?: string;
-  remoteUrl: string;
+  /** Public URL of the remote site, when known. Optional in SFTP mode. */
+  remoteUrl?: string;
   createdAt: string;
   /** Local site URL (e.g. http://my-site.local). Set after pull. */
   localUrl?: string;
   /** Absolute path to Local site's webRoot (e.g. .../app/public). Set after pull. */
   webRootPath?: string;
 };
+
+export type ApiSiteMapping = SiteMappingBase & {
+  linkMode: 'api';
+  serverId: number;
+  appId: number;
+  /** Always set in API mode (we know the canonical app URL). */
+  remoteUrl: string;
+};
+
+export type SftpSiteMapping = SiteMappingBase & {
+  linkMode: 'sftp';
+  /** SFTP/SSH host (Cloudways server public IP, usually). */
+  host: string;
+  port: number;
+  /** SFTP/SSH username (Cloudways app's `master_*` or app sys_user). */
+  username: string;
+  /**
+   * Detected during the connection probe so push/pull don't have to
+   * shell out again. Example: "/home/master/applications/abcdef/public_html".
+   */
+  webRoot?: string;
+  /** Cached `wp option get siteurl` from probe time, if wp-cli was available. */
+  detectedSiteUrl?: string;
+};
+
+export type SiteMapping = ApiSiteMapping | SftpSiteMapping;
+
+/** Type guards for narrowing a SiteMapping in caller code. */
+export function isApiMapping(m: SiteMapping): m is ApiSiteMapping {
+  return m.linkMode === 'api';
+}
+export function isSftpMapping(m: SiteMapping): m is SftpSiteMapping {
+  return m.linkMode === 'sftp';
+}
 
 export type MapSiteRequest = {
   localSiteId: string;

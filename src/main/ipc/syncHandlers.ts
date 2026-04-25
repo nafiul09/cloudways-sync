@@ -1,6 +1,6 @@
 import type { ServiceContainerServices } from '@getflywheel/local/main';
 import { CloudwaysError } from '../cloudways/errors';
-import { AppPasswordStore, EncryptionUnavailableError } from '../credentials';
+import { AppPasswordStore, EncryptionUnavailableError, SftpCredentialStore } from '../credentials';
 import { RemoteError } from '../remote/errors';
 import type { ConnectionService } from '../connection/service';
 import { JobStore } from '../sync/JobStore';
@@ -74,6 +74,7 @@ export type RegisterSyncOptions = {
   sendIPCEvent: (channel: string, ...args: unknown[]) => void;
   jobs?: JobStore;
   appPasswords?: AppPasswordStore;
+  sftpCreds?: SftpCredentialStore;
 };
 
 export function registerSyncHandlers({
@@ -84,6 +85,7 @@ export function registerSyncHandlers({
   sendIPCEvent,
   jobs = new JobStore(),
   appPasswords,
+  sftpCreds,
 }: RegisterSyncOptions): void {
   const undoLedger = new UndoLedger(userDataDir);
   const siteMapper = new SiteMapper(userDataDir);
@@ -157,6 +159,7 @@ export function registerSyncHandlers({
         // After successful pull, save a mapping so push can find the local site
         if (result.status === 'success' && result.localSiteId) {
           await siteMapper.set({
+            linkMode: 'api',
             localSiteId: result.localSiteId,
             serverId: pullPlan.serverId,
             appId: pullPlan.appId,
@@ -253,6 +256,7 @@ export function registerSyncHandlers({
         // On success for Mode B, save a site mapping
         if (newlyCreatedAppId !== undefined) {
           const mapping: SiteMapping = {
+            linkMode: 'api',
             localSiteId: pushPlan.localSiteId,
             serverId: pushPlan.serverId,
             appId: newlyCreatedAppId,
@@ -330,6 +334,7 @@ export function registerSyncHandlers({
         throw new CloudwaysError('AUTH_INVALID', 'appLabel is required.', { retriable: false });
       }
       const mapping: SiteMapping = {
+        linkMode: 'api',
         localSiteId: payload.localSiteId,
         serverId: payload.serverId,
         appId: payload.appId,
@@ -355,10 +360,17 @@ export function registerSyncHandlers({
       if (!payload?.localSiteId?.trim()) {
         throw new CloudwaysError('AUTH_INVALID', 'localSiteId is required.', { retriable: false });
       }
+      // Look up first so we can clean up SFTP credentials before
+      // forgetting the mapping. (Without the mapping we'd have no
+      // record that this site ever had SFTP creds stored.)
+      const existing = await siteMapper.get(payload.localSiteId);
       const removed = await siteMapper.delete(payload.localSiteId, {
         serverId: payload.serverId,
         appId: payload.appId,
       });
+      if (removed && existing?.linkMode === 'sftp' && sftpCreds) {
+        await sftpCreds.delete(existing.localSiteId).catch(() => undefined);
+      }
       return { removed };
     });
   });
