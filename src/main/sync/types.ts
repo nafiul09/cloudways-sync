@@ -15,8 +15,12 @@ export type PullPlan = {
 
 export type PushPlan = {
   id: string;
-  serverId: number;
-  appId: number;
+  /** 'api' (default for legacy plans) or 'sftp'. */
+  linkMode: 'api' | 'sftp';
+  /** Required for API mode. Undefined in SFTP mode. */
+  serverId?: number;
+  /** Required for API mode. 0 = Mode B. Undefined in SFTP mode. */
+  appId?: number;
   localSiteId: string;
   localUrl: string;
   webRootPath: string;

@@ -248,9 +248,17 @@ export type DetectBreezeResponse = { breezeStatus: BreezeStatus };
 export type PushIncludes = PullIncludes; // same granularity for push
 
 export type PlanPushRequest = {
-  serverId: number;
-  /** Set to 0 for Mode B (new app provisioning). */
-  appId: number;
+  /**
+   * Discriminator between API-mode and SFTP-mode pushes. Defaults to
+   * 'api' (legacy callers don't set it). SFTP-mode requests omit
+   * serverId/appId; the handler resolves them via the SiteMapping
+   * stored under `localSiteId`.
+   */
+  linkMode?: 'api' | 'sftp';
+  /** Required for API mode. Omitted in SFTP mode. */
+  serverId?: number;
+  /** Required for API mode. Set to 0 for Mode B. Omitted in SFTP mode. */
+  appId?: number;
   /** The Local site ID (from Local's site registry). */
   localSiteId: string;
   /** The local site's URL (e.g. http://buildpress.local). */
@@ -271,16 +279,39 @@ export type PlanPushResponse = {
 
 // --- Phase 7: Undo ---
 
+export type UndoSnapshot = {
+  kind: 'local-tar';
+  /** Remote path to the wp-content tar.gz captured before push. */
+  remoteContentTarPath: string;
+  /** Remote path to the gzipped DB dump captured before push. */
+  remoteSqlGzPath: string;
+  /** Optional path to a local mirror of the snapshot under userDataDir. */
+  localCachePath?: string;
+  /** Approximate total size (bytes) of the snapshot files. */
+  sizeBytes?: number;
+};
+
 export type UndoRecord = {
   id: string;
   jobId: string;
-  serverId: number;
-  appId: number;
+  /**
+   * Discriminator. Records written before this field existed are
+   * treated as 'api' on read.
+   */
+  linkMode?: 'api' | 'sftp';
+  /** Identifies the SiteMapping for SFTP-mode undo. */
+  localSiteId?: string;
+  /** Present in API mode. */
+  serverId?: number;
+  /** Present in API mode. */
+  appId?: number;
   appLabel: string;
-  /** Cloudways backup timestamp used for restore. */
+  /** Cloudways backup timestamp used for restore (API mode). */
   remoteBackupTimestamp?: string;
-  /** Path to local safety snapshot (tar.gz). */
+  /** Path to local safety snapshot (tar.gz). Legacy. Use `snapshot`. */
   localSnapshotPath?: string;
+  /** Pre-push snapshot info (SFTP mode). */
+  snapshot?: UndoSnapshot;
   /** Push source URL (local .local URL). */
   sourceUrl: string;
   /** Push target URL (remote production URL). */
