@@ -697,7 +697,7 @@ function SftpLinkedState({
   mapping: SftpSiteMapping;
   onUnlink: () => void;
 }): React.ReactElement {
-  // SFTP mode supports push + undo today (Phase 3). Pull lands in Phase 4.
+  // SFTP mode supports push + undo + pull (read-only) as of Phase 4.
   const [pushBusy, setPushBusy] = useState(false);
   const [pushStep, setPushStep] = useState<SyncStep | undefined>();
   const [pushIncludes, setPushIncludes] = useState<PushIncludes>({ ...DEFAULT_INCLUDES });
@@ -706,9 +706,14 @@ function SftpLinkedState({
   const [undoResult, setUndoResult] = useState<string | undefined>();
   const [undoErr, setUndoErr] = useState<string | undefined>();
 
+  // --- Pull state ---
+  const [pullBusy, setPullBusy] = useState(false);
+  const [pullStep, setPullStep] = useState<SyncStep | undefined>();
+  const [pullIncludes, setPullIncludes] = useState<PullIncludes>({ ...DEFAULT_INCLUDES });
+
   useEffect(() => {
     const unsubscribe = subscribeJobProgress((event: JobProgressEvent) => {
-      if (!pushBusy) return;
+      if (!pushBusy && !pullBusy) return;
       const percent =
         typeof event.totalBytes === 'number' &&
         event.totalBytes > 0 &&
@@ -716,11 +721,16 @@ function SftpLinkedState({
           ? Math.min(100, Math.round((event.bytesTransferred / event.totalBytes) * 100))
           : undefined;
       const step: SyncStep = { stepId: event.stepId, percent, detail: event.detail };
-      if (event.status === 'running') setPushStep(step);
-      else if (event.status === 'success' || event.status === 'failed') setPushStep(undefined);
+      if (event.status === 'running') {
+        if (pushBusy) setPushStep(step);
+        if (pullBusy) setPullStep(step);
+      } else if (event.status === 'success' || event.status === 'failed') {
+        setPushStep(undefined);
+        setPullStep(undefined);
+      }
     });
     return unsubscribe;
-  }, [pushBusy]);
+  }, [pushBusy, pullBusy]);
 
   const runPush = async () => {
     setPushBusy(true);
@@ -769,6 +779,26 @@ function SftpLinkedState({
     }
   };
 
+  const runPull = async () => {
+    setPullBusy(true);
+    setPullStep(undefined);
+    showSyncModal('pull', mapping.appLabel);
+    try {
+      const plan = await ipcClient.planPull({
+        linkMode: 'sftp',
+        destinationName: mapping.appLabel,
+        localSiteId: site.id,
+        includes: pullIncludes,
+      });
+      await ipcClient.runJob({ planId: plan.planId });
+    } catch (e) {
+      failSyncModal(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPullBusy(false);
+      setPullStep(undefined);
+    }
+  };
+
   const pushLabel = (() => {
     if (!pushBusy) return 'Push to Cloudways (SFTP)';
     if (!pushStep) return 'Pushing…';
@@ -776,6 +806,15 @@ function SftpLinkedState({
     return pushStep.percent != null
       ? `Pushing — ${label} (${pushStep.percent}%)`
       : `Pushing — ${label}`;
+  })();
+
+  const pullLabel = (() => {
+    if (!pullBusy) return 'Pull from Cloudways (SFTP)';
+    if (!pullStep) return 'Pulling…';
+    const label = PULL_STEP_LABELS[pullStep.stepId] ?? pullStep.stepId;
+    return pullStep.percent != null
+      ? `Pulling — ${label} (${pullStep.percent}%)`
+      : `Pulling — ${label}`;
   })();
 
   return (
@@ -817,27 +856,36 @@ function SftpLinkedState({
           {pushStep.detail}
         </div>
       )}
-      {!pushBusy && (
+      {!pushBusy && !pullBusy && (
         <SelectivePanel heading="Include in push" includes={pushIncludes} onChange={setPushIncludes} />
       )}
       {undoErr && <div style={styles.banner}><Banner variant="error">{undoErr}</Banner></div>}
       {undoResult && <div style={styles.banner}><Banner variant="success">{undoResult}</Banner></div>}
 
       <div style={styles.actionBar}>
-        <Button onClick={runPush} disabled={pushBusy || undoBusy}>
+        <Button onClick={runPush} disabled={pushBusy || pullBusy || undoBusy}>
           {pushLabel}
         </Button>
-        {lastPushUndoId && !pushBusy && (
+        {lastPushUndoId && !pushBusy && !pullBusy && (
           <Button onClick={runUndo} disabled={undoBusy} style={{ marginLeft: 8 }}>
             {undoBusy ? 'Restoring…' : 'Undo last push (local snapshot)'}
           </Button>
         )}
       </div>
 
-      <Banner variant="warning" style={{ marginTop: 12 }}>
-        Pull over SFTP is coming in a future update. For now, push from
-        this Local site to your linked Cloudways app.
-      </Banner>
+      {pullBusy && pullStep?.detail && (
+        <div style={{ marginBottom: 8, marginTop: 12, fontSize: 11, opacity: 0.65 }}>
+          {pullStep.detail}
+        </div>
+      )}
+      {!pushBusy && !pullBusy && (
+        <SelectivePanel heading="Include in pull" includes={pullIncludes} onChange={setPullIncludes} />
+      )}
+      <div style={styles.actionBar}>
+        <Button onClick={runPull} disabled={pushBusy || pullBusy || undoBusy}>
+          {pullLabel}
+        </Button>
+      </div>
     </section>
   );
 }

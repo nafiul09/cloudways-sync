@@ -7,8 +7,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PullOrchestrator } from '../../src/main/sync/PullOrchestrator';
 import type { PullPlan, SiteImporter } from '../../src/main/sync/types';
 import type { ApiClient } from '../../src/main/cloudways/ApiClient';
+import { ApiAppLink, SftpAppLink } from '../../src/main/sync/AppLink';
 import type { SftpClient } from '../../src/main/remote/SftpClient';
 import type { SshClient } from '../../src/main/remote/SshClient';
+import type { SftpCredentialStore } from '../../src/main/credentials';
+import type { ApiSiteMapping, SftpSiteMapping } from '../../src/shared/ipcTypes';
 
 const tmpRoots: string[] = [];
 
@@ -27,6 +30,7 @@ function tmpDir(): string {
 function makePlan(overrides?: Partial<PullPlan>): PullPlan {
   return {
     id: 'pull_test',
+    linkMode: 'api',
     serverId: 1,
     appId: 10,
     destinationName: 'Pulled Site',
@@ -72,6 +76,19 @@ function makeClient(): ApiClient {
       is_completed: 1,
     })),
   } as unknown as ApiClient;
+}
+
+function makeApiLink(client: ApiClient): ApiAppLink {
+  const mapping: ApiSiteMapping = {
+    linkMode: 'api',
+    localSiteId: 'local-1',
+    serverId: 1,
+    appId: 10,
+    appLabel: 'Remote WP',
+    remoteUrl: 'https://example.com',
+    createdAt: new Date().toISOString(),
+  };
+  return new ApiAppLink(mapping, client);
 }
 
 class FakeSsh {
@@ -159,7 +176,7 @@ describe('PullOrchestrator', () => {
     };
     const progress: string[] = [];
     const orchestrator = new PullOrchestrator({
-      client: makeClient(),
+      link: makeApiLink(makeClient()),
       importer,
       userDataDir,
       sshFactory: () => fakeSsh as unknown as SshClient,
@@ -200,7 +217,7 @@ describe('PullOrchestrator', () => {
     };
     const progress: string[] = [];
     const orchestrator = new PullOrchestrator({
-      client: makeClient(),
+      link: makeApiLink(makeClient()),
       importer,
       userDataDir,
       sshFactory: () => fakeSsh as unknown as SshClient,
@@ -248,7 +265,7 @@ describe('PullOrchestrator', () => {
     };
     const progress: string[] = [];
     const orchestrator = new PullOrchestrator({
-      client: makeClient(),
+      link: makeApiLink(makeClient()),
       importer,
       userDataDir,
       sshFactory: () => fakeSsh as unknown as SshClient,
@@ -277,5 +294,65 @@ describe('PullOrchestrator', () => {
     expect(fakeSsh.commands.some((cmd) => cmd.includes('db export'))).toBe(true);
     // No tar command should have run
     expect(fakeSsh.commands.every((cmd) => !cmd.startsWith('tar czf'))).toBe(true);
+  });
+
+  it('SFTP-mode pull skips the Cloudways backup step', async () => {
+    const userDataDir = tmpDir();
+    const fakeSsh = new FakeSsh();
+    const fakeSftp = new FakeSftp(
+      zlib.gzipSync('CREATE TABLE wp_options (id int);'),
+      createWpContentTarGz(),
+    );
+    const importer: SiteImporter = {
+      importPulledSite: vi.fn(async () => ({
+        localSiteId: 'local-1',
+        localUrl: 'http://example.local',
+        webRootPath: '/tmp/sites/example/app/public',
+      })),
+    };
+
+    const sftpMapping: SftpSiteMapping = {
+      linkMode: 'sftp',
+      localSiteId: 'local-1',
+      appLabel: 'Remote SFTP App',
+      host: '203.0.113.10',
+      port: 22,
+      username: 'master',
+      webRoot: '/home/master/applications/abcdef/public_html',
+      createdAt: new Date().toISOString(),
+    };
+    const sftpCreds = {
+      get: async () => 'pw',
+      set: async () => undefined,
+      delete: async () => undefined,
+      clear: async () => undefined,
+    } as unknown as SftpCredentialStore;
+    const link = new SftpAppLink(sftpMapping, sftpCreds);
+
+    const progress: string[] = [];
+    const orchestrator = new PullOrchestrator({
+      link,
+      importer,
+      userDataDir,
+      sshFactory: () => fakeSsh as unknown as SshClient,
+      sftpFactory: () => fakeSftp as unknown as SftpClient,
+      emitProgress: (event) => progress.push(`${event.stepId}:${event.status}:${event.detail ?? ''}`),
+    });
+
+    const plan = makePlan({
+      linkMode: 'sftp',
+      serverId: undefined,
+      appId: undefined,
+      destinationName: 'Remote SFTP App',
+      localSiteId: 'local-1',
+    });
+    const result = await orchestrator.run(plan);
+
+    expect(result.status).toBe('success');
+    // Backup is skipped in SFTP mode — the API isn't available.
+    expect(progress.some((p) => p.startsWith('backup:skipped'))).toBe(true);
+    // The pull still ran.
+    expect(progress).toContain('local-site:success:');
+    expect(fakeSftp.downloads.length).toBe(2);
   });
 });
