@@ -183,8 +183,17 @@ export type PullIncludes = {
 };
 
 export type PlanPullRequest = {
-  serverId: number;
-  appId: number;
+  /**
+   * Discriminator between API-mode and SFTP-mode pulls. Defaults to
+   * 'api' (legacy callers don't set it). SFTP-mode requests omit
+   * serverId/appId; the handler resolves them via the SiteMapping
+   * stored under `localSiteId`.
+   */
+  linkMode?: 'api' | 'sftp';
+  /** Required for API mode. Omitted in SFTP mode. */
+  serverId?: number;
+  /** Required for API mode. Omitted in SFTP mode. */
+  appId?: number;
   destinationName: string;
   /** Human-readable server name, persisted in SiteMapping after pull. */
   serverLabel?: string;

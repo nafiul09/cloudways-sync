@@ -102,17 +102,37 @@ export function registerSyncHandlers({
   addIpcAsyncListener(CHANNELS.PLAN_PULL, (...args: unknown[]) => {
     const payload = args[0] as PlanPullRequest | undefined;
     return runHandler<PlanPullResponse>(async () => {
-      if (!payload || typeof payload.serverId !== 'number' || typeof payload.appId !== 'number') {
-        throw new CloudwaysError('AUTH_INVALID', 'serverId and appId are required.', { retriable: false });
+      if (!payload) {
+        throw new CloudwaysError('AUTH_INVALID', 'Missing pull payload.', { retriable: false });
       }
       if (!payload.destinationName?.trim()) {
         throw new CloudwaysError('AUTH_INVALID', 'destinationName is required.', { retriable: false });
       }
-      if (payload.sftpPassword?.trim()) {
-        if (!appPasswords) {
-          throw new EncryptionUnavailableError();
+      const linkMode = payload.linkMode ?? 'api';
+      if (linkMode === 'api') {
+        if (typeof payload.serverId !== 'number' || typeof payload.appId !== 'number') {
+          throw new CloudwaysError(
+            'AUTH_INVALID',
+            'serverId and appId are required for API-mode pull.',
+            { retriable: false },
+          );
         }
-        await appPasswords.set(payload.serverId, payload.appId, payload.sftpPassword);
+        if (payload.sftpPassword?.trim()) {
+          if (!appPasswords) {
+            throw new EncryptionUnavailableError();
+          }
+          await appPasswords.set(payload.serverId, payload.appId, payload.sftpPassword);
+        }
+      } else {
+        // SFTP-mode pull updates an existing linked site, so localSiteId
+        // is mandatory and the SiteMapping carries the credentials.
+        if (!payload.localSiteId?.trim()) {
+          throw new CloudwaysError(
+            'AUTH_INVALID',
+            'localSiteId is required for SFTP-mode pull.',
+            { retriable: false },
+          );
+        }
       }
       const plan = jobs.createPullPlan(payload);
       return { planId: plan.id, steps: plan.steps };
@@ -165,18 +185,69 @@ export function registerSyncHandlers({
       // Try pull plan first, then push plan
       const pullPlan = jobs.getPullPlan(payload.planId);
       if (pullPlan) {
+        // Resolve the AppLink for this plan. SFTP-mode pulls require a
+        // pre-existing mapping (the user must have linked via SFTP first);
+        // API-mode pulls either reference an existing mapping or
+        // synthesize one from the request fields.
+        let link: AppLink;
+        if (pullPlan.linkMode === 'sftp') {
+          if (!pullPlan.localSiteId) {
+            throw new CloudwaysError(
+              'OPERATION_FAILED',
+              'SFTP-mode pull plan is missing localSiteId.',
+              { retriable: false },
+            );
+          }
+          const mapping = await siteMapper.get(pullPlan.localSiteId);
+          if (!mapping || mapping.linkMode !== 'sftp') {
+            throw new CloudwaysError(
+              'OPERATION_FAILED',
+              'No SFTP mapping found for this site. Re-link via SFTP and try again.',
+              { retriable: false },
+            );
+          }
+          if (!sftpCreds) throw new EncryptionUnavailableError();
+          link = appLinkFor(mapping, { sftpCreds });
+        } else {
+          if (typeof pullPlan.serverId !== 'number' || typeof pullPlan.appId !== 'number') {
+            throw new CloudwaysError(
+              'OPERATION_FAILED',
+              'API-mode pull plan is missing serverId/appId.',
+              { retriable: false },
+            );
+          }
+          const apiMapping: ApiSiteMapping = {
+            linkMode: 'api',
+            localSiteId: pullPlan.localSiteId ?? '',
+            serverId: pullPlan.serverId,
+            appId: pullPlan.appId,
+            appLabel: pullPlan.destinationName,
+            serverLabel: pullPlan.serverLabel,
+            remoteUrl: '',
+            createdAt: new Date().toISOString(),
+          };
+          link = appLinkFor(apiMapping, { client: connection.requireClient(), appPasswords });
+        }
+
         const orchestrator = new PullOrchestrator({
-          client: connection.requireClient(),
+          link,
           importer: new LocalSiteImporter({ services }),
           userDataDir,
-          getAppPassword: appPasswords ? (serverId, appId) => appPasswords.get(serverId, appId) : undefined,
           isCancelled: (jobId) => jobs.isCancelled(jobId),
           emitProgress: (event: JobProgressEvent) => sendIPCEvent(CHANNELS.JOB_PROGRESS, event),
         });
         const result = await orchestrator.run(pullPlan);
 
-        // After successful pull, save a mapping so push can find the local site
-        if (result.status === 'success' && result.localSiteId) {
+        // After successful pull, save a mapping so push can find the local site.
+        // For SFTP mode, the mapping already exists and may carry richer fields
+        // (host/port/username/webRoot) — don't overwrite it.
+        if (
+          result.status === 'success' &&
+          result.localSiteId &&
+          pullPlan.linkMode !== 'sftp' &&
+          typeof pullPlan.serverId === 'number' &&
+          typeof pullPlan.appId === 'number'
+        ) {
           await siteMapper.set({
             linkMode: 'api',
             localSiteId: result.localSiteId,

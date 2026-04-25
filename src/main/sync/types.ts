@@ -2,8 +2,12 @@ import type { BreezeStatus, PullIncludes, PushIncludes, SyncStep } from '../../s
 
 export type PullPlan = {
   id: string;
-  serverId: number;
-  appId: number;
+  /** 'api' (default for legacy plans) or 'sftp'. */
+  linkMode: 'api' | 'sftp';
+  /** Required for API mode. Undefined in SFTP mode. */
+  serverId?: number;
+  /** Required for API mode. Undefined in SFTP mode. */
+  appId?: number;
   destinationName: string;
   serverLabel?: string;
   /** When set, pull updates this existing Local site instead of creating a new one. */
