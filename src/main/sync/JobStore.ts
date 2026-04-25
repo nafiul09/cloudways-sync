@@ -51,6 +51,7 @@ export class JobStore {
     const now = new Date().toISOString();
     const plan: PullPlan = {
       id: `pull_${randomUUID()}`,
+      linkMode: req.linkMode ?? 'api',
       serverId: req.serverId,
       appId: req.appId,
       destinationName: req.destinationName.trim(),
@@ -73,6 +74,7 @@ export class JobStore {
     const includes: PushIncludes = { ...DEFAULT_INCLUDES, ...req.includes };
     const plan: PushPlan = {
       id: `push_${randomUUID()}`,
+      linkMode: req.linkMode ?? 'api',
       serverId: req.serverId,
       appId: req.appId,
       localSiteId: req.localSiteId,

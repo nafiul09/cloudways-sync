@@ -14,7 +14,9 @@ import { ipcClient, IpcCallError, subscribeJobProgress } from '../ipcClient';
 import { refreshSiteListIcons } from '../sidebar/injectSiteListIcons';
 import { showSyncModal, failSyncModal } from '../SyncModal';
 import { MaskedEmail } from '../components/MaskedEmail';
+import { LinkViaSftpDialog } from './LinkViaSftpDialog';
 import type {
+  ApiSiteMapping,
   AppDetail,
   AppSummary,
   BreezeStatus,
@@ -23,9 +25,11 @@ import type {
   PullIncludes,
   PushIncludes,
   ServerSummary,
+  SftpSiteMapping,
   SiteMapping,
   SmokeAppResponse,
 } from '../../shared/ipcTypes';
+import { isApiMapping } from '../../shared/ipcTypes';
 
 const PUSH_STEP_LABELS: Record<string, string> = {
   validate: 'Validating',
@@ -227,8 +231,10 @@ export function SiteToolsPanel({ site }: { site: Site }): React.ReactElement {
         const res = await ipcClient.getMapping({ localSiteId: site.id });
         if (cancelled) return;
         const m = res.mapping;
-        // Backfill serverLabel for mappings created before that field existed.
-        if (m && !m.serverLabel) {
+        // Backfill serverLabel for API mappings created before that field
+        // existed. SFTP mappings are linked locally — there is no remote
+        // server label to fetch.
+        if (m && isApiMapping(m) && !m.serverLabel) {
           try {
             const servers = await ipcClient.listServers();
             const server = servers.servers.find((s) => s.id === m.serverId);
@@ -270,40 +276,60 @@ export function SiteToolsPanel({ site }: { site: Site }): React.ReactElement {
         <Banner variant="error">Could not read connection status: {loadError}</Banner>
       ) : status === undefined || mapping === undefined ? (
         <div style={styles.center}><Spinner /></div>
-      ) : status.connected ? (
-        mapping ? (
-          <>
-            {unlinkError && <div style={styles.banner}><Banner variant="error">{unlinkError}</Banner></div>}
-            <LinkedState
+      ) : mapping ? (
+        <>
+          {unlinkError && <div style={styles.banner}><Banner variant="error">{unlinkError}</Banner></div>}
+          {isApiMapping(mapping) ? (
+            status.connected ? (
+              <LinkedState
+                site={site}
+                email={status.email}
+                mapping={mapping}
+                onUnlink={() => {
+                  const previous = mapping;
+                  setUnlinkError(undefined);
+                  setMapping(null);
+                  ipcClient.unmapSite({
+                    localSiteId: site.id,
+                    serverId: previous.serverId,
+                    appId: previous.appId,
+                  }).then(() => {
+                    refreshSiteListIcons();
+                  }).catch((err) => {
+                    setMapping(previous);
+                    setUnlinkError(err instanceof IpcCallError ? err.message : String(err));
+                  });
+                }}
+              />
+            ) : (
+              // API-linked but the user disconnected. Show the badge but
+              // explain they need to reconnect to push/pull.
+              <ApiLinkedDisconnected mapping={mapping} />
+            )
+          ) : (
+            <SftpLinkedState
               site={site}
-              email={status.email}
               mapping={mapping}
               onUnlink={() => {
                 const previous = mapping;
                 setUnlinkError(undefined);
                 setMapping(null);
-                ipcClient.unmapSite({
-                  localSiteId: site.id,
-                  serverId: previous.serverId,
-                  appId: previous.appId,
-                }).then(() => {
-                  refreshSiteListIcons();
-                }).catch((err) => {
-                  setMapping(previous);
-                  setUnlinkError(err instanceof IpcCallError ? err.message : String(err));
-                });
+                ipcClient.unmapSite({ localSiteId: site.id })
+                  .then(() => { refreshSiteListIcons(); })
+                  .catch((err) => {
+                    setMapping(previous);
+                    setUnlinkError(err instanceof IpcCallError ? err.message : String(err));
+                  });
               }}
             />
-          </>
-        ) : (
-          <UnlinkedState
-            site={site}
-            email={status.email}
-            onLinked={(m) => { setMapping(m); refreshSiteListIcons(); }}
-          />
-        )
+          )}
+        </>
       ) : (
-        <DisconnectedState />
+        <UnlinkedState
+          site={site}
+          email={status.connected ? status.email : undefined}
+          onLinked={(m) => { setMapping(m); refreshSiteListIcons(); }}
+        />
       )}
     </div>
   );
@@ -331,7 +357,7 @@ function LinkedState({
 }: {
   site: Site;
   email: string;
-  mapping: SiteMapping;
+  mapping: ApiSiteMapping;
   onUnlink: () => void;
 }): React.ReactElement {
   const [mode, setMode] = useState<'push' | 'pull'>('push');
@@ -652,6 +678,315 @@ function LinkedState({
   );
 }
 
+// --- Linked via SFTP-only mode (Phase 1 placeholder) ---
+//
+// The full Push / Pull UI for SFTP mappings is wired up in later phases.
+// For Phase 1 we ship the type plumbing and a minimal "linked" view so
+// existing API-mode users see no regressions while the rest of the
+// feature lands behind the scenes.
+
+function SftpLinkedState({
+  site,
+  mapping,
+  onUnlink,
+}: {
+  site: Site;
+  mapping: SftpSiteMapping;
+  onUnlink: () => void;
+}): React.ReactElement {
+  // SFTP mode supports push + undo + pull (read-only) as of Phase 4.
+  const [mode, setMode] = useState<'push' | 'pull'>('push');
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushStep, setPushStep] = useState<SyncStep | undefined>();
+  const [pushIncludes, setPushIncludes] = useState<PushIncludes>({ ...DEFAULT_INCLUDES });
+  const [lastPushUndoId, setLastPushUndoId] = useState<string | undefined>();
+  const [undoBusy, setUndoBusy] = useState(false);
+  const [undoResult, setUndoResult] = useState<string | undefined>();
+  const [undoErr, setUndoErr] = useState<string | undefined>();
+
+  // --- Pull state ---
+  const [pullBusy, setPullBusy] = useState(false);
+  const [pullStep, setPullStep] = useState<SyncStep | undefined>();
+  const [pullIncludes, setPullIncludes] = useState<PullIncludes>({ ...DEFAULT_INCLUDES });
+
+  const busy = pushBusy || pullBusy || undoBusy;
+
+  useEffect(() => {
+    const unsubscribe = subscribeJobProgress((event: JobProgressEvent) => {
+      if (!pushBusy && !pullBusy) return;
+      const percent =
+        typeof event.totalBytes === 'number' &&
+        event.totalBytes > 0 &&
+        typeof event.bytesTransferred === 'number'
+          ? Math.min(100, Math.round((event.bytesTransferred / event.totalBytes) * 100))
+          : undefined;
+      const step: SyncStep = { stepId: event.stepId, percent, detail: event.detail };
+      if (event.status === 'running') {
+        if (pushBusy) setPushStep(step);
+        if (pullBusy) setPullStep(step);
+      } else if (event.status === 'success' || event.status === 'failed') {
+        setPushStep(undefined);
+        setPullStep(undefined);
+      }
+    });
+    return unsubscribe;
+  }, [pushBusy, pullBusy]);
+
+  const runPush = async () => {
+    setPushBusy(true);
+    setPushStep(undefined);
+    setLastPushUndoId(undefined);
+    setUndoErr(undefined);
+    setUndoResult(undefined);
+    showSyncModal('push', mapping.appLabel);
+    try {
+      const plan = await ipcClient.planPush({
+        linkMode: 'sftp',
+        localSiteId: site.id,
+        localUrl: site.url || `http://${site.domain}`,
+        webRootPath: site.paths?.webRoot || `${site.path}/app/public`,
+        includes: pushIncludes,
+      });
+      await ipcClient.runJob({ planId: plan.planId });
+      try {
+        const undos = await ipcClient.listUndo();
+        const latest = undos.records.find(
+          (r) => r.localSiteId === site.id && !r.undoneAt,
+        );
+        if (latest) setLastPushUndoId(latest.id);
+      } catch { /* non-fatal */ }
+    } catch (e) {
+      failSyncModal(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPushBusy(false);
+      setPushStep(undefined);
+    }
+  };
+
+  const runUndo = async () => {
+    if (!lastPushUndoId) return;
+    setUndoBusy(true);
+    setUndoErr(undefined);
+    setUndoResult(undefined);
+    try {
+      await ipcClient.undoPush({ recordId: lastPushUndoId });
+      setUndoResult('Undo completed — remote site restored from local snapshot.');
+      setLastPushUndoId(undefined);
+    } catch (e) {
+      setUndoErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setUndoBusy(false);
+    }
+  };
+
+  const runPull = async () => {
+    setPullBusy(true);
+    setPullStep(undefined);
+    showSyncModal('pull', mapping.appLabel);
+    try {
+      const plan = await ipcClient.planPull({
+        linkMode: 'sftp',
+        destinationName: mapping.appLabel,
+        localSiteId: site.id,
+        includes: pullIncludes,
+      });
+      await ipcClient.runJob({ planId: plan.planId });
+    } catch (e) {
+      failSyncModal(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPullBusy(false);
+      setPullStep(undefined);
+    }
+  };
+
+  const pushLabel = (() => {
+    if (!pushBusy) return 'Push to Cloudways (SFTP)';
+    if (!pushStep) return 'Pushing…';
+    const label = PUSH_STEP_LABELS[pushStep.stepId] ?? pushStep.stepId;
+    return pushStep.percent != null
+      ? `Pushing — ${label} (${pushStep.percent}%)`
+      : `Pushing — ${label}`;
+  })();
+
+  const pullLabel = (() => {
+    if (!pullBusy) return 'Pull from Cloudways (SFTP)';
+    if (!pullStep) return 'Pulling…';
+    const label = PULL_STEP_LABELS[pullStep.stepId] ?? pullStep.stepId;
+    return pullStep.percent != null
+      ? `Pulling — ${label} (${pullStep.percent}%)`
+      : `Pulling — ${label}`;
+  })();
+
+  return (
+    <section>
+      <Banner variant="success">
+        <strong>Linked via SFTP</strong> — this site syncs through SSH/SFTP credentials, not the Cloudways API.
+      </Banner>
+      <div style={styles.linkedInfo}>
+        <div style={styles.linkedHeader}>
+          <Text style={styles.linkedHeading}>Linked via SFTP</Text>
+          <TextButton onClick={onUnlink} style={styles.unlinkBtn}>Unlink</TextButton>
+        </div>
+        <div style={styles.linkedGrid}>
+          <Text size="caption" style={styles.linkedLabel}>App</Text>
+          <Text style={styles.linkedValue}>{mapping.appLabel}</Text>
+          <Text size="caption" style={styles.linkedLabel}>Host</Text>
+          <Text style={styles.linkedValue}>{mapping.username}@{mapping.host}:{mapping.port}</Text>
+          {mapping.remoteUrl ? (
+            <>
+              <Text size="caption" style={styles.linkedLabel}>URL</Text>
+              <a
+                href={mapping.remoteUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ ...styles.linkedValue, color: '#51bb7b', textDecoration: 'none' }}
+                onClick={(e) => {
+                  e.preventDefault();
+                  const url = mapping.remoteUrl!;
+                  try {
+                    // eslint-disable-next-line @typescript-eslint/no-var-requires, global-require
+                    const { shell } = require('electron') as { shell: { openExternal: (url: string) => void } };
+                    shell.openExternal(url);
+                  } catch {
+                    window.open(url, '_blank');
+                  }
+                }}
+              >
+                {mapping.remoteUrl}
+              </a>
+            </>
+          ) : null}
+          {mapping.webRoot && (
+            <>
+              <Text size="caption" style={styles.linkedLabel}>Path</Text>
+              <Text style={styles.linkedValue}>{mapping.webRoot}</Text>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Push / Pull tab switcher */}
+      <div style={styles.tabs}>
+        <button
+          type="button"
+          style={mode === 'push' ? styles.tabActive : styles.tab}
+          onClick={() => setMode('push')}
+          disabled={busy}
+        >
+          Push
+        </button>
+        <button
+          type="button"
+          style={mode === 'pull' ? styles.tabActive : styles.tab}
+          onClick={() => setMode('pull')}
+          disabled={busy}
+        >
+          Pull
+        </button>
+      </div>
+
+      {mode === 'push' ? (
+        <>
+          {!pushBusy && (
+            <div style={{ ...styles.banner, marginBottom: 16 }}>
+              <Banner variant="neutral">
+                <strong>SFTP mode can&rsquo;t trigger a Cloudways API backup.</strong>{' '}
+                Cloudways Sync still snapshots the remote <code>wp-content</code> + database
+                into <code>private_html/.cwsync-snapshots/</code> before pushing (and mirrors
+                it locally if &lt;500 MB), so <em>Undo last push</em> can roll back. For full
+                safety, take a manual backup from <strong>Cloudways → Application → Backups</strong>{' '}
+                first.
+              </Banner>
+            </div>
+          )}
+          {pushBusy && pushStep?.detail && (
+            <div style={{ marginBottom: 8, fontSize: 11, opacity: 0.65 }}>
+              {pushStep.detail}
+            </div>
+          )}
+          {!pushBusy && (
+            <SelectivePanel heading="Include in push" includes={pushIncludes} onChange={setPushIncludes} />
+          )}
+          {undoErr && <div style={styles.banner}><Banner variant="error">{undoErr}</Banner></div>}
+          {undoResult && <div style={styles.banner}><Banner variant="success">{undoResult}</Banner></div>}
+          <div style={styles.actionBar}>
+            <Button onClick={runPush} disabled={busy}>
+              {pushLabel}
+            </Button>
+            {lastPushUndoId && !pushBusy && (
+              <Button onClick={runUndo} disabled={undoBusy} style={{ marginLeft: 8 }}>
+                {undoBusy ? 'Restoring…' : 'Undo last push (local snapshot)'}
+              </Button>
+            )}
+          </div>
+        </>
+      ) : (
+        <>
+          {!pullBusy && (
+            <div style={{ ...styles.banner, marginBottom: 16 }}>
+              <Banner variant="neutral">
+                <strong>Pulls overwrite your Local site.</strong> The selected{' '}
+                <code>wp-content</code> subdirs and database will be replaced from the remote.
+                Cloudways stays untouched (pulls are read-only on the server). If you have
+                unsaved local changes, export the site first via{' '}
+                <strong>Local → right-click site → Export…</strong>.
+              </Banner>
+            </div>
+          )}
+          {pullBusy && pullStep?.detail && (
+            <div style={{ marginBottom: 8, fontSize: 11, opacity: 0.65 }}>
+              {pullStep.detail}
+            </div>
+          )}
+          {!pullBusy && (
+            <SelectivePanel heading="Include in pull" includes={pullIncludes} onChange={setPullIncludes} />
+          )}
+          <div style={styles.actionBar}>
+            <Button onClick={runPull} disabled={busy}>
+              {pullLabel}
+            </Button>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+// Placeholder for API-linked sites when the user disconnects from
+// Cloudways. We keep showing the link metadata but disable sync until
+// they reconnect.
+function ApiLinkedDisconnected({ mapping }: { mapping: ApiSiteMapping }): React.ReactElement {
+  return (
+    <section>
+      <Banner variant="warning">
+        This site is linked to Cloudways via API, but Cloudways Sync isn't
+        currently connected. Open the sidebar and connect to push or pull.
+      </Banner>
+      <div style={styles.linkedInfo}>
+        <div style={styles.linkedHeader}>
+          <Text style={styles.linkedHeading}>Linked via API</Text>
+        </div>
+        <div style={styles.linkedGrid}>
+          <Text size="caption" style={styles.linkedLabel}>App</Text>
+          <Text style={styles.linkedValue}>{mapping.appLabel}</Text>
+          {mapping.serverLabel && (
+            <>
+              <Text size="caption" style={styles.linkedLabel}>Server</Text>
+              <Text style={styles.linkedValue}>{mapping.serverLabel}</Text>
+            </>
+          )}
+          {mapping.remoteUrl && (
+            <>
+              <Text size="caption" style={styles.linkedLabel}>URL</Text>
+              <Text style={{ ...styles.linkedValue, color: '#51bb7b' }}>{mapping.remoteUrl}</Text>
+            </>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 // --- Connected + Not Mapped: Server/App picker to link ---
 
 function UnlinkedState({
@@ -660,9 +995,13 @@ function UnlinkedState({
   onLinked,
 }: {
   site: Site;
-  email: string;
+  email?: string;
   onLinked: (mapping: SiteMapping) => void;
 }): React.ReactElement {
+  // The unlinked screen is split into two tabs: link via Cloudways API
+  // (the original flow) or link via SFTP (manual credentials). Default
+  // to whichever mode is usable — API if connected, SFTP otherwise.
+  const [mode, setMode] = useState<'api' | 'sftp'>(email ? 'api' : 'sftp');
   const [servers, setServers] = useState<ServerSummary[] | undefined>();
   const [apps, setApps] = useState<AppSummary[] | undefined>();
   const [selectedServerId, setSelectedServerId] = useState<number | undefined>();
@@ -681,12 +1020,13 @@ function UnlinkedState({
   const canLink = Boolean(appDetail?.sftp.password && smokeResult);
 
   useEffect(() => {
+    if (!email) return; // SFTP-only path: skip API calls.
     let cancelled = false;
     ipcClient.listServers()
       .then((res) => { if (!cancelled) setServers(res.servers); })
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); });
     return () => { cancelled = true; };
-  }, []);
+  }, [email]);
 
   useEffect(() => {
     if (!selectedServerId) { setApps(undefined); return; }
@@ -794,6 +1134,48 @@ function UnlinkedState({
 
   return (
     <section>
+      <div style={styles.tabs} role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === 'api'}
+          onClick={() => setMode('api')}
+          style={mode === 'api' ? styles.tabActive : styles.tab}
+        >
+          Cloudways API
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === 'sftp'}
+          onClick={() => setMode('sftp')}
+          style={mode === 'sftp' ? styles.tabActive : styles.tab}
+        >
+          SFTP credentials
+        </button>
+      </div>
+
+      {mode === 'sftp' && (
+        <LinkViaSftpDialog
+          localSiteId={site.id}
+          defaultLabel={site.name}
+          onLinked={(mapping) => onLinked(mapping)}
+        />
+      )}
+
+      {mode === 'api' && !email && (
+        <>
+          <Banner variant="warning">
+            Cloudways Sync isn&rsquo;t connected to a Cloudways account, so the
+            server / app picker is unavailable. Open the Cloudways Sync sidebar
+            to connect with an API key, or switch to the <strong>SFTP
+            credentials</strong> tab if you don&rsquo;t have API access.
+          </Banner>
+        </>
+      )}
+
+      {mode === 'api' && email && (
+      <>
       <Banner variant="success">
         Connected as <MaskedEmail email={email} bold />
       </Banner>
@@ -946,22 +1328,8 @@ function UnlinkedState({
       )}
 
       {error && <div style={styles.banner}><Banner variant="error">{error}</Banner></div>}
-    </section>
-  );
-}
-
-// --- Disconnected ---
-
-function DisconnectedState(): React.ReactElement {
-  return (
-    <section>
-      <Banner variant="warning">Cloudways Sync isn&rsquo;t connected to a Cloudways account yet.</Banner>
-      <div style={styles.row}>
-        <Text>
-          Click the <strong>Cloudways Sync</strong> icon in Local&rsquo;s sidebar to connect your
-          Cloudways API key.
-        </Text>
-      </div>
+      </>
+      )}
     </section>
   );
 }

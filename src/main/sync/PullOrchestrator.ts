@@ -2,15 +2,12 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import type { ApiClient } from '../cloudways/ApiClient';
 import { CloudwaysError } from '../cloudways/errors';
-import type { App, Server } from '../cloudways/schemas';
 import { RemoteError } from '../remote/errors';
 import { SftpClient, type SftpConnectConfig } from '../remote/SftpClient';
 import { SshClient, type SshConnectConfig } from '../remote/SshClient';
 import {
   buildWpCommand,
-  cloudwaysAppPublicPath,
   detectBreezePlugin,
   shellQuote,
   wpCli,
@@ -20,37 +17,40 @@ import type { JobProgressEvent, RunJobResponse } from '../../shared/ipcTypes';
 import { selectedWpContentSubdirs, shouldSkipStep, tarExcludeFlags } from './Selective';
 import { sweepStaleJobs } from './cleanup';
 import type { PullMetadata, PullPlan, SiteImporter } from './types';
+import type { AppLink } from './AppLink';
 
 const execFileAsync = promisify(execFile);
 
 export type PullOrchestratorOptions = {
-  client: ApiClient;
+  /**
+   * Adapter that hides API vs SFTP differences. The orchestrator
+   * never touches ApiClient directly — it asks the link for SSH
+   * connection details and (when available) for remote backup.
+   */
+  link: AppLink;
   importer: SiteImporter;
   userDataDir: string;
   sshFactory?: (config: SshConnectConfig) => SshClient;
   sftpFactory?: (config: SftpConnectConfig) => SftpClient;
-  getAppPassword?: (serverId: number, appId: number) => Promise<string | undefined>;
   emitProgress?: (event: JobProgressEvent) => void;
   isCancelled?: (jobId: string) => boolean;
 };
 
 export class PullOrchestrator {
-  private readonly client: ApiClient;
+  private readonly link: AppLink;
   private readonly importer: SiteImporter;
   private readonly userDataDir: string;
   private readonly sshFactory: (config: SshConnectConfig) => SshClient;
   private readonly sftpFactory: (config: SftpConnectConfig) => SftpClient;
-  private readonly getAppPassword?: (serverId: number, appId: number) => Promise<string | undefined>;
   private readonly emitProgress?: (event: JobProgressEvent) => void;
   private readonly isCancelled?: (jobId: string) => boolean;
 
   constructor(opts: PullOrchestratorOptions) {
-    this.client = opts.client;
+    this.link = opts.link;
     this.importer = opts.importer;
     this.userDataDir = opts.userDataDir;
     this.sshFactory = opts.sshFactory ?? ((config) => new SshClient(config));
     this.sftpFactory = opts.sftpFactory ?? ((config) => new SftpClient(config));
-    this.getAppPassword = opts.getAppPassword;
     this.emitProgress = opts.emitProgress;
     this.isCancelled = opts.isCancelled;
   }
@@ -74,63 +74,35 @@ export class PullOrchestrator {
     let sftp: SftpClient | undefined;
     try {
       this.assertNotCancelled(jobId);
-      const { server, app, auth } = await this.step(jobId, 'validate', async () => {
-        const resolved = await this.resolveCloudwaysApp(plan.serverId, plan.appId);
-        if (!resolved.app.application.toLowerCase().includes('wordpress')) {
+      const ctx = await this.step(jobId, 'validate', async () => {
+        const resolved = await this.link.resolve();
+        if (resolved.api && !resolved.api.app.application.toLowerCase().includes('wordpress')) {
           throw new RemoteError('SSH_COMMAND_FAILED', 'Only WordPress apps can be pulled into Local.', {
             retriable: false,
-            detail: { application: resolved.app.application },
-          });
-        }
-        if (!resolved.app.sys_user) {
-          throw new RemoteError('SSH_COMMAND_FAILED', 'Cloudways app is missing sys_user.', {
-            retriable: false,
+            detail: { application: resolved.api.app.application },
           });
         }
         return resolved;
       });
 
       await this.step(jobId, 'backup', async () => {
-        const MAX_BACKUP_ATTEMPTS = 3;
-        const RETRY_DELAY_MS = 15_000;
-        for (let attempt = 1; attempt <= MAX_BACKUP_ATTEMPTS; attempt++) {
-          try {
-            const operationId = await this.client.triggerAppBackup(server.id, app.id);
-            await this.client.waitForOperation(operationId, {
-              onTick: (op) => {
-                const detail = op.message || (op.status != null ? String(op.status) : '');
-                if (detail) this.progress(jobId, 'backup', 'running', detail);
-              },
-            });
-            return; // backup succeeded
-          } catch (err) {
-            if (!(err instanceof CloudwaysError && err.status === 422)) throw err;
-
-            // Distinguish "operation in progress" from "recent backup exists"
-            const isOperationBusy = /operation.*in progress/i.test(err.message);
-            if (isOperationBusy && attempt < MAX_BACKUP_ATTEMPTS) {
-              this.progress(
-                jobId, 'backup', 'running',
-                `Server busy — retrying in ${Math.round(RETRY_DELAY_MS / 1000)}s (attempt ${attempt}/${MAX_BACKUP_ATTEMPTS})…`,
-              );
-              await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
-              continue;
-            }
-            // Either a genuine "recent backup" 422, or exhausted retries
-            this.progress(jobId, 'backup', 'running', isOperationBusy
-              ? 'Server busy — proceeding without new backup'
-              : 'Skipped — recent backup exists');
-          }
+        if (!this.link.triggerRemoteBackup) {
+          // SFTP mode: read-only pull, no Cloudways API access for backup.
+          this.progress(jobId, 'backup', 'skipped', 'SFTP-mode pull — remote backup is unavailable');
+          return;
         }
+        await this.runApiBackup(jobId);
       });
 
-      const appPublicPath = cloudwaysAppPublicPath(app.sys_user as string);
-      const appRootPath = cloudwaysAppRootPath(app.sys_user as string);
+      const appPublicPath = ctx.webRoot;
+      const appRootPath = appPublicPath.endsWith('/public_html')
+        ? appPublicPath.slice(0, -'/public_html'.length)
+        : path.posix.dirname(appPublicPath);
       remoteSql = `${appRootPath}/private_html/cws-${jobId}.sql`;
       remoteSqlGz = `${remoteSql}.gz`;
-      sftpSqlGz = `private_html/cws-${jobId}.sql.gz`;
-      ssh = this.sshFactory(auth);
-      sftp = this.sftpFactory(auth);
+      sftpSqlGz = relativeToHome(remoteSqlGz);
+      ssh = this.sshFactory(ctx.auth);
+      sftp = this.sftpFactory(ctx.auth);
 
       await this.step(jobId, 'ssh', async () => {
         await ssh?.connect();
@@ -178,14 +150,14 @@ export class PullOrchestrator {
       } else {
         await this.step(jobId, 'download-content', async () => {
           remoteContentTarGz = `${appRootPath}/private_html/cws-${jobId}-wpcontent.tar.gz`;
-          const sftpContentTarGz = `private_html/cws-${jobId}-wpcontent.tar.gz`;
+          const sftpContentTarGz = relativeToHome(remoteContentTarGz);
 
           this.progress(jobId, 'download-content', 'running', 'Archiving wp-content on server…');
           await execChecked(
             ssh as SshClient,
             `tar czf ${shellQuote(remoteContentTarGz)} ` +
               `${tarExcludeFlags(plan.includes)} ` +
-              `-C ${shellQuote(cloudwaysAppPublicPath(app.sys_user as string))} wp-content`,
+              `-C ${shellQuote(appPublicPath)} wp-content`,
           );
 
           await sftp?.end();
@@ -212,9 +184,10 @@ export class PullOrchestrator {
         await writeManifest(manifestPath, {
           jobId,
           planId: plan.id,
-          serverId: server.id,
-          appId: app.id,
-          appLabel: app.label,
+          linkMode: this.link.mode,
+          serverId: ctx.api?.server.id,
+          appId: ctx.api?.app.id,
+          appLabel: ctx.api?.app.label ?? this.link.mapping.appLabel,
           sourceUrl: metadata.homeUrl,
           destinationName: plan.destinationName,
           metadata,
@@ -259,58 +232,35 @@ export class PullOrchestrator {
     }
   }
 
-  private async resolveCloudwaysApp(
-    serverId: number,
-    appId: number,
-  ): Promise<{ server: Server; app: App; auth: SshConnectConfig & SftpConnectConfig }> {
-    const servers = await this.client.listServers();
-    const server = servers.find((s) => s.id === serverId);
-    if (!server) {
-      throw new RemoteError('SSH_COMMAND_FAILED', `Server ${serverId} not found.`, { retriable: false });
-    }
-    const app = server.apps.find((candidate) => candidate.id === appId);
-    if (!app) {
-      throw new RemoteError('SSH_COMMAND_FAILED', `App ${appId} not found on server.`, { retriable: false });
-    }
-    // Skip ensureAppSshAccess — getAppSshAccess returns unreliable
-    // results, causing enableAppSsh to trigger a server operation that
-    // blocks the backup step with 422 "operation in progress." SSH is
-    // already verified during credential creation + smoke test. If SSH
-    // isn't working, the connect step will surface the error.
-    let creds = await this.client.getAppCreds(server.id, app.id);
-    let primary = creds[0];
+  private async runApiBackup(jobId: string): Promise<void> {
+    const trigger = this.link.triggerRemoteBackup;
+    if (!trigger) return;
+    const MAX_BACKUP_ATTEMPTS = 3;
+    const RETRY_DELAY_MS = 15_000;
+    for (let attempt = 1; attempt <= MAX_BACKUP_ATTEMPTS; attempt++) {
+      try {
+        await trigger.call(this.link);
+        return; // backup succeeded
+      } catch (err) {
+        if (!(err instanceof CloudwaysError && err.status === 422)) throw err;
 
-    if (!primary?.password) {
-      creds = await this.client.getAppCreds(server.id, app.id);
-      primary = creds[0];
+        // Distinguish "operation in progress" from "recent backup exists"
+        const isOperationBusy = /operation.*in progress/i.test(err.message);
+        if (isOperationBusy && attempt < MAX_BACKUP_ATTEMPTS) {
+          this.progress(
+            jobId, 'backup', 'running',
+            `Server busy — retrying in ${Math.round(RETRY_DELAY_MS / 1000)}s (attempt ${attempt}/${MAX_BACKUP_ATTEMPTS})…`,
+          );
+          await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+          continue;
+        }
+        // Either a genuine "recent backup" 422, or exhausted retries
+        this.progress(jobId, 'backup', 'running', isOperationBusy
+          ? 'Server busy — proceeding without new backup'
+          : 'Skipped — recent backup exists');
+        return;
+      }
     }
-
-    const host = server.public_ip ?? server.server_fqdn;
-    const username = primary?.sys_user ?? app.sys_user;
-    const storedPassword = this.getAppPassword ? await this.getAppPassword(server.id, app.id) : undefined;
-    const password = primary?.password || storedPassword;
-    if (!host) {
-      throw new RemoteError('SSH_NETWORK', 'Cloudways did not return a server address.', { retriable: false });
-    }
-    if (!username) {
-      throw new RemoteError('SSH_AUTH_FAILED', 'No SSH user available for this app.', { retriable: false });
-    }
-    if (!password) {
-      throw new RemoteError(
-        'SSH_AUTH_FAILED',
-        'No SSH/SFTP password available. Enter the Cloudways application password in the link step, then try again.',
-        { retriable: false },
-      );
-    }
-    return {
-      server,
-      app,
-      auth: {
-        host,
-        username,
-        password,
-      },
-    };
   }
 
   /** Run an SFTP operation with an idle watchdog. If the caller-
@@ -391,8 +341,14 @@ export class PullOrchestrator {
   }
 }
 
-function cloudwaysAppRootPath(appSystemUser: string): string {
-  return `/home/master/applications/${appSystemUser}`;
+/** Convert an absolute remote path under the SFTP user's home into the
+ * relative form `ssh2-sftp-client.download` expects. */
+function relativeToHome(absPath: string): string {
+  const idx = absPath.indexOf('/private_html/');
+  if (idx >= 0) {
+    return absPath.slice(idx + 1);
+  }
+  return absPath;
 }
 
 async function collectMetadata(ssh: SshClient, appPublicPath: string): Promise<PullMetadata> {

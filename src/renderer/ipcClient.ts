@@ -23,6 +23,8 @@ import {
   type IpcResult,
   type JobDoneEvent,
   type JobProgressEvent,
+  type LinkViaSftpRequest,
+  type LinkViaSftpResponse,
   type ListAppsRequest,
   type ListAppsResponse,
   type ListMappingsResponse,
@@ -34,6 +36,8 @@ import {
   type PlanPullResponse,
   type PlanPushRequest,
   type PlanPushResponse,
+  type ProbeSftpRequest,
+  type ProbeSftpResponse,
   type RunJobRequest,
   type RunJobResponse,
   type SerializedError,
@@ -86,6 +90,8 @@ export const ipcClient = {
   getMappingByApp: (req: GetMappingByAppRequest) => invoke<GetMappingByAppResponse>(CHANNELS.GET_MAPPING_BY_APP, req),
   listMappings: () => invoke<ListMappingsResponse>(CHANNELS.LIST_MAPPINGS, {}),
   detectBreeze: (req: DetectBreezeRequest) => invoke<DetectBreezeResponse>(CHANNELS.DETECT_BREEZE, req),
+  probeSftp: (req: ProbeSftpRequest) => invoke<ProbeSftpResponse>(CHANNELS.PROBE_SFTP, req),
+  linkViaSftp: (req: LinkViaSftpRequest) => invoke<LinkViaSftpResponse>(CHANNELS.LINK_VIA_SFTP, req),
 };
 
 // --- Streaming job events ----------------------------------------------
