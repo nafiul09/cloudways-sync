@@ -257,6 +257,13 @@ export function LinkViaSftpDialog({
               user has access to a Cloudways WordPress app.
             </div>
           )}
+          {(errorCode === 'SSH_TIMEOUT' || errorCode === 'SSH_CLOSED') && (
+            <div style={styles.coach}>
+              The server stopped responding mid-handshake. Most often this is
+              an idle SSH session being dropped by Cloudways' firewall —
+              re-test, or check your IP whitelist in Application Settings → SSH/SFTP.
+            </div>
+          )}
         </Banner>
       )}
 
