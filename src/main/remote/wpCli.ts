@@ -34,8 +34,9 @@ export function shellQuote(arg: string): string {
 }
 
 /** Build a full `wp …` command string with `--path=` and quoted args. */
-export function buildWpCommand(appPublicPath: string, args: string[]): string {
-  const parts = ['wp', '--path=.', ...args.map(shellQuote)];
+export function buildWpCommand(appPublicPath: string, args: string[], opts?: { skipPlugins?: boolean }): string {
+  const extra = opts?.skipPlugins ? ['--skip-plugins', '--skip-themes'] : [];
+  const parts = ['wp', '--path=.', ...extra, ...args.map(shellQuote)];
   return `cd ${shellQuote(appPublicPath)} && ${parts.join(' ')}`;
 }
 
@@ -74,9 +75,11 @@ export async function wpCliJson<T = unknown>(
   }
 }
 
-/** Convenience: `wp option get <name>`; returns the trimmed stdout. */
+/** Convenience: `wp option get <name>`; returns the trimmed stdout.
+ *  Always runs with --skip-plugins --skip-themes to avoid PHP fatals
+ *  from broken plugins (e.g. Breeze after we exclude it from sync). */
 export async function wpOptionGet(ctx: WpCliContext, name: string): Promise<string> {
-  const res = await wpCli(ctx, ['option', 'get', name]);
+  const res = await wpCli(ctx, ['option', 'get', name, '--skip-plugins', '--skip-themes']);
   return res.stdout.trimEnd();
 }
 

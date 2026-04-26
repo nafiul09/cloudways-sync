@@ -16,6 +16,7 @@ import { registerFleetHandlers } from './ipc/fleetHandlers';
 import { registerRemoteHandlers } from './ipc/remoteHandlers';
 import { registerSyncHandlers } from './ipc/syncHandlers';
 import { PING_CHANNEL, type PingRequest, type PingResponse } from '../shared/ipcTypes';
+import { sweepLocalSnapshots, sweepStaleJobs } from './sync/cleanup';
 
 export default function register(context: AddonMainContext): void {
   const { ipcMain } = context.electron;
@@ -35,6 +36,15 @@ export default function register(context: AddonMainContext): void {
     // eslint-disable-next-line no-console
     console.warn('[Cloudways Sync] credential hydration failed:', err);
   });
+
+  // Sweep leftover staging dirs and local snapshot caches from any
+  // previous run that crashed before its finally block could clean up.
+  // Remote files are cleaned at the start of each job (needs SSH).
+  const userDataDir = app.getPath('userData');
+  Promise.all([
+    sweepStaleJobs(userDataDir),
+    sweepLocalSnapshots(userDataDir),
+  ]).catch(() => undefined);
 
   registerConnectionHandlers({ addIpcAsyncListener, connection, appPasswords });
   registerFleetHandlers({ addIpcAsyncListener, connection, appPasswords });
