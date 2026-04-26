@@ -15,7 +15,7 @@ import {
 } from '../remote/wpCli';
 import type { JobProgressEvent, RunJobResponse } from '../../shared/ipcTypes';
 import { selectedWpContentSubdirs, shouldSkipStep, tarExcludeFlags } from './Selective';
-import { sweepStaleJobs } from './cleanup';
+import { pruneRemoteSnapshots, sweepLocalSnapshots, sweepRemoteTempFiles, sweepStaleJobs } from './cleanup';
 import type { PullMetadata, PullPlan, SiteImporter } from './types';
 import type { AppLink } from './AppLink';
 
@@ -108,6 +108,14 @@ export class PullOrchestrator {
         await ssh?.connect();
       });
 
+      // Housekeeping: clean orphaned temp files from previous crashed
+      // runs and prune old snapshots (remote + local).
+      await Promise.all([
+        sweepRemoteTempFiles(ssh, appRootPath),
+        pruneRemoteSnapshots(ssh, appRootPath),
+        sweepLocalSnapshots(this.userDataDir),
+      ]);
+
       const metadata = await this.step(jobId, 'metadata', async () =>
         collectMetadata(ssh as SshClient, appPublicPath),
       );
@@ -128,6 +136,7 @@ export class PullOrchestrator {
             'export',
             remoteSql as string,
             '--add-drop-table',
+            '--skip-plugins', '--skip-themes',
           ], { timeoutMs: 10 * 60 * 1000 });
           await execChecked(ssh as SshClient, `gzip -f ${shellQuote(remoteSql as string)}`);
         });
@@ -355,11 +364,11 @@ async function collectMetadata(ssh: SshClient, appPublicPath: string): Promise<P
   const [homeUrl, siteUrl, wpVersion, breezeStatus] = await Promise.all([
     wpOptionGet({ ssh, appPublicPath }, 'home'),
     wpOptionGet({ ssh, appPublicPath }, 'siteurl'),
-    wpCli({ ssh, appPublicPath }, ['core', 'version']).then((r) => r.stdout.trim()).catch(() => undefined),
+    wpCli({ ssh, appPublicPath }, ['core', 'version', '--skip-plugins', '--skip-themes']).then((r) => r.stdout.trim()).catch(() => undefined),
     detectBreezePlugin({ ssh, appPublicPath }),
   ]);
   const multisiteCheck = await ssh.exec(
-    buildWpCommand(appPublicPath, ['core', 'is-installed', '--network']),
+    buildWpCommand(appPublicPath, ['core', 'is-installed', '--network'], { skipPlugins: true }),
   );
   return {
     homeUrl,

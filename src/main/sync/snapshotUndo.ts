@@ -1,21 +1,18 @@
 // Restore a remote WordPress install from a local-tar snapshot
-// captured by PushOrchestrator (SFTP-mode safety net). Matches the
-// flow described in the SFTP link plan §5.5:
+// captured by PushOrchestrator (SFTP-mode safety net):
 //   1. Reopen SSH/SFTP via the AppLink.
 //   2. If the snapshot files were mirrored to userDataDir, push them
 //      back up to the remote first.
-//   3. Capture a "pre-undo" snapshot of the current state so the user
-//      can re-run undo if it goes wrong.
-//   4. Untar wp-content over the live web root.
-//   5. Restore the DB from the gzipped dump (best-effort if wp-cli is
-//      missing — we fall back to `mysql` via the user's environment).
+//   3. Untar wp-content over the live web root.
+//   4. Restore the DB from the gzipped dump.
+//   5. Clean up all snapshot files from the server.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { RemoteError } from '../remote/errors';
 import { SftpClient, type SftpConnectConfig } from '../remote/SftpClient';
 import { SshClient, type SshConnectConfig } from '../remote/SshClient';
-import { buildWpCommand, shellQuote, wpCli } from '../remote/wpCli';
+import { shellQuote, wpCli } from '../remote/wpCli';
 import type { JobProgressEvent, UndoSnapshot } from '../../shared/ipcTypes';
 import type { AppLink } from './AppLink';
 
@@ -81,26 +78,7 @@ export async function restoreFromLocalSnapshot(
       }
     }
 
-    // 2. Capture a pre-undo snapshot of the current state so the user
-    //    can re-run undo or recover if the restore itself crashes.
-    const preUndoDir = `${appRootPath}/private_html/.cwsync-snapshots/pre-undo-${jobId}`;
-    progress('undo-pre-snapshot', 'running', 'Capturing pre-undo state on server…');
-    await execChecked(ssh, `mkdir -p ${shellQuote(preUndoDir)}`);
-    await execChecked(
-      ssh,
-      `tar -czf ${shellQuote(`${preUndoDir}/wp-content.tar.gz`)} ` +
-        `--exclude=cache --exclude=upgrade ` +
-        `-C ${shellQuote(appPublicPath)} wp-content`,
-    );
-    try {
-      const dumpCmd = buildWpCommand(appPublicPath, ['db', 'export', '-']);
-      await execChecked(ssh, `${dumpCmd} | gzip > ${shellQuote(`${preUndoDir}/db.sql.gz`)}`);
-    } catch {
-      // wp-cli not available — leave a marker
-      await ssh.exec(`: > ${shellQuote(`${preUndoDir}/db.sql.gz`)}`).catch(() => undefined);
-    }
-
-    // 3. Restore wp-content from the snapshot.
+    // 2. Restore wp-content from the snapshot.
     progress('undo-restore-content', 'running', 'Restoring wp-content from snapshot…');
     // Remove the live wp-content first so files deleted between push
     // and undo come back. tar extracts wp-content/ directly.
@@ -110,7 +88,7 @@ export async function restoreFromLocalSnapshot(
       `tar -xzf ${shellQuote(snapshot.remoteContentTarPath)} -C ${shellQuote(appPublicPath)}`,
     );
 
-    // 4. Restore the DB if a non-empty snapshot exists.
+    // 3. Restore the DB if a non-empty snapshot exists.
     progress('undo-restore-db', 'running', 'Restoring database from snapshot…');
     const sqlSize = (await ssh.exec(
       `stat -c %s ${shellQuote(snapshot.remoteSqlGzPath)} 2>/dev/null || echo 0`,
@@ -124,15 +102,14 @@ export async function restoreFromLocalSnapshot(
       try {
         await wpCli(
           { ssh, appPublicPath },
-          ['db', 'import', tmpSql],
+          ['db', 'import', tmpSql, '--skip-plugins', '--skip-themes'],
           { timeoutMs: 10 * 60 * 1000 },
         );
       } catch (err) {
         throw new RemoteError(
           'SSH_COMMAND_FAILED',
-          'Failed to import snapshot DB. The pre-undo state was saved at ' +
-            preUndoDir,
-          { retriable: false, detail: { preUndoDir, err: String(err) } },
+          `Failed to import snapshot DB: ${String(err)}`,
+          { retriable: false, detail: { err: String(err) } },
         );
       } finally {
         await ssh.exec(`rm -f ${shellQuote(tmpSql)}`).catch(() => undefined);
@@ -140,6 +117,17 @@ export async function restoreFromLocalSnapshot(
     } else {
       progress('undo-restore-db', 'skipped', 'No DB snapshot was captured at push time.');
     }
+
+    // 4. Clean up — wipe the entire .cwsync-snapshots dir for this job.
+    progress('undo-cleanup', 'running', 'Cleaning up snapshot files…');
+    const snapshotDir = `${appRootPath}/private_html/.cwsync-snapshots`;
+    await execChecked(ssh,
+      `rm -f ${shellQuote(snapshot.remoteContentTarPath)} ${shellQuote(snapshot.remoteSqlGzPath)}`,
+    ).catch(() => undefined);
+    // Remove any stale pre-undo dirs too.
+    await ssh.exec(`rm -rf ${snapshotDir}/pre-undo-*`).catch(() => undefined);
+    // If .cwsync-snapshots is now empty, remove it entirely.
+    await ssh.exec(`rmdir ${shellQuote(snapshotDir)} 2>/dev/null; true`).catch(() => undefined);
 
     progress('undo-restore', 'success');
   } finally {

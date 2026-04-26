@@ -12,7 +12,7 @@ import {
 import type { Site } from '@getflywheel/local';
 import { ipcClient, IpcCallError, subscribeJobProgress } from '../ipcClient';
 import { refreshSiteListIcons } from '../sidebar/injectSiteListIcons';
-import { showSyncModal, failSyncModal } from '../SyncModal';
+import { showSyncModal, dismissSyncModal, failSyncModal } from '../SyncModal';
 import { MaskedEmail } from '../components/MaskedEmail';
 import { LinkViaSftpDialog } from './LinkViaSftpDialog';
 import type {
@@ -386,6 +386,21 @@ function LinkedState({
   const busy = pushBusy || pullBusy || credentialBusy;
   const canSync = Boolean(appDetail?.sftp.password);
 
+  // Hydrate undo state from ledger on mount so the button survives restarts.
+  useEffect(() => {
+    let cancelled = false;
+    ipcClient.listUndo()
+      .then((res) => {
+        if (cancelled) return;
+        const latest = res.records.find(
+          (r) => r.appId === mapping.appId && !r.undoneAt && !r.dismissedAt,
+        );
+        if (latest) setLastPushUndoId(latest.id);
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [mapping.appId]);
+
   useEffect(() => {
     let cancelled = false;
     setAppDetail(undefined);
@@ -429,6 +444,17 @@ function LinkedState({
     return unsubscribe;
   }, [pushBusy, pullBusy]);
 
+  // Prevent Electron from closing while any operation is in flight.
+  useEffect(() => {
+    if (!pushBusy && !pullBusy && !undoBusy) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = 'A sync operation is in progress. Closing now may leave your site in a broken state.';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [pushBusy, pullBusy, undoBusy]);
+
   // --- Push handler ---
   const runPush = async () => {
     setPushBusy(true);
@@ -449,7 +475,7 @@ function LinkedState({
       try {
         const undos = await ipcClient.listUndo();
         const latest = undos.records.find(
-          (r) => r.appId === mapping.appId && !r.undoneAt,
+          (r) => r.appId === mapping.appId && !r.undoneAt && !r.dismissedAt,
         );
         if (latest) setLastPushUndoId(latest.id);
       } catch { /* non-fatal */ }
@@ -466,12 +492,34 @@ function LinkedState({
     setUndoBusy(true);
     setUndoResult(undefined);
     setUndoErr(undefined);
+    showSyncModal('undo', mapping.appLabel);
     try {
       await ipcClient.undoPush({ recordId: lastPushUndoId });
       setUndoResult('Undo completed — remote site restored to pre-push state.');
       setLastPushUndoId(undefined);
+      dismissSyncModal();
     } catch (e) {
       setUndoErr(e instanceof Error ? e.message : String(e));
+      failSyncModal(e instanceof Error ? e.message : String(e));
+    } finally {
+      setUndoBusy(false);
+    }
+  };
+
+  const dismissUndo = async () => {
+    if (!lastPushUndoId) return;
+    setUndoBusy(true);
+    setUndoErr(undefined);
+    setUndoResult(undefined);
+    showSyncModal('confirm', mapping.appLabel);
+    try {
+      await ipcClient.dismissUndo({ recordId: lastPushUndoId });
+      setUndoResult('Push confirmed — snapshot cleaned.');
+      setLastPushUndoId(undefined);
+      dismissSyncModal();
+    } catch (e) {
+      setUndoErr(e instanceof Error ? e.message : String(e));
+      failSyncModal(e instanceof Error ? e.message : String(e));
     } finally {
       setUndoBusy(false);
     }
@@ -651,9 +699,14 @@ function LinkedState({
               {pushLabel}
             </Button>
             {lastPushUndoId && !pushBusy && (
-              <Button onClick={runUndo} disabled={undoBusy} style={{ marginLeft: 8 }}>
-                {undoBusy ? 'Restoring…' : 'Undo last push'}
-              </Button>
+              <>
+                <Button onClick={runUndo} disabled={undoBusy} style={{ marginLeft: 8 }}>
+                  {undoBusy ? 'Restoring…' : 'Undo last push'}
+                </Button>
+                <Button onClick={dismissUndo} disabled={undoBusy} style={{ marginLeft: 8 }}>
+                  Confirm push
+                </Button>
+              </>
             )}
           </div>
         </>
@@ -732,6 +785,32 @@ function SftpLinkedState({
     return unsubscribe;
   }, [pushBusy, pullBusy]);
 
+  // Hydrate undo state from ledger on mount so the button survives restarts.
+  useEffect(() => {
+    let cancelled = false;
+    ipcClient.listUndo()
+      .then((res) => {
+        if (cancelled) return;
+        const latest = res.records.find(
+          (r) => r.localSiteId === site.id && !r.undoneAt && !r.dismissedAt,
+        );
+        if (latest) setLastPushUndoId(latest.id);
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [site.id]);
+
+  // Prevent Electron from closing while any operation is in flight.
+  useEffect(() => {
+    if (!pushBusy && !pullBusy && !undoBusy) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = 'A sync operation is in progress. Closing now may leave your site in a broken state.';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [pushBusy, pullBusy, undoBusy]);
+
   const runPush = async () => {
     setPushBusy(true);
     setPushStep(undefined);
@@ -751,7 +830,7 @@ function SftpLinkedState({
       try {
         const undos = await ipcClient.listUndo();
         const latest = undos.records.find(
-          (r) => r.localSiteId === site.id && !r.undoneAt,
+          (r) => r.localSiteId === site.id && !r.undoneAt && !r.dismissedAt,
         );
         if (latest) setLastPushUndoId(latest.id);
       } catch { /* non-fatal */ }
@@ -768,12 +847,34 @@ function SftpLinkedState({
     setUndoBusy(true);
     setUndoErr(undefined);
     setUndoResult(undefined);
+    showSyncModal('undo', mapping.appLabel);
     try {
       await ipcClient.undoPush({ recordId: lastPushUndoId });
       setUndoResult('Undo completed — remote site restored from local snapshot.');
       setLastPushUndoId(undefined);
+      dismissSyncModal();
     } catch (e) {
       setUndoErr(e instanceof Error ? e.message : String(e));
+      failSyncModal(e instanceof Error ? e.message : String(e));
+    } finally {
+      setUndoBusy(false);
+    }
+  };
+
+  const dismissUndo = async () => {
+    if (!lastPushUndoId) return;
+    setUndoBusy(true);
+    setUndoErr(undefined);
+    setUndoResult(undefined);
+    showSyncModal('confirm', mapping.appLabel);
+    try {
+      await ipcClient.dismissUndo({ recordId: lastPushUndoId });
+      setUndoResult('Push confirmed — snapshot cleaned from server.');
+      setLastPushUndoId(undefined);
+      dismissSyncModal();
+    } catch (e) {
+      setUndoErr(e instanceof Error ? e.message : String(e));
+      failSyncModal(e instanceof Error ? e.message : String(e));
     } finally {
       setUndoBusy(false);
     }
@@ -914,9 +1015,14 @@ function SftpLinkedState({
               {pushLabel}
             </Button>
             {lastPushUndoId && !pushBusy && (
-              <Button onClick={runUndo} disabled={undoBusy} style={{ marginLeft: 8 }}>
-                {undoBusy ? 'Restoring…' : 'Undo last push (local snapshot)'}
-              </Button>
+              <>
+                <Button onClick={runUndo} disabled={undoBusy} style={{ marginLeft: 8 }}>
+                  {undoBusy ? 'Restoring…' : 'Undo last push'}
+                </Button>
+                <Button onClick={dismissUndo} disabled={undoBusy} style={{ marginLeft: 8 }}>
+                  Confirm push
+                </Button>
+              </>
             )}
           </div>
         </>
