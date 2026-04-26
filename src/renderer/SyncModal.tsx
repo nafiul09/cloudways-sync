@@ -47,7 +47,7 @@ const PULL_STEP_LABELS: Record<string, string> = {
 
 // ---- Global state ----
 
-type SyncMode = 'push' | 'pull';
+type SyncMode = 'push' | 'pull' | 'undo' | 'confirm';
 
 type RunningState = {
   phase: 'running';
@@ -178,21 +178,54 @@ function SyncModalContent(): React.ReactElement | null {
     if (e.key === 'Tab') e.preventDefault();
   }, []);
 
+  // Prevent the Electron window from closing while a sync is running.
+  useEffect(() => {
+    if (state.phase !== 'running') return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      // Electron requires returnValue to be set for the dialog to show.
+      e.returnValue = 'A sync operation is in progress. Closing now may leave your site in a broken state.';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [state.phase]);
+
   if (state.phase === 'idle') return null;
 
+  const MODE_LABELS: Record<SyncMode, { running: string; done: string; failed: string; success: string }> = {
+    push: {
+      running: 'Pushing to Cloudways',
+      done: 'Push complete',
+      failed: 'Push failed',
+      success: 'Successfully pushed to Cloudways.',
+    },
+    pull: {
+      running: 'Pulling from Cloudways',
+      done: 'Pull complete',
+      failed: 'Pull failed',
+      success: 'Pull completed — site updated from Cloudways.',
+    },
+    undo: {
+      running: 'Restoring from snapshot',
+      done: 'Restore complete',
+      failed: 'Restore failed',
+      success: 'Remote site restored to pre-push state.',
+    },
+    confirm: {
+      running: 'Confirming push',
+      done: 'Push confirmed',
+      failed: 'Cleanup failed',
+      success: 'Snapshot cleaned from server.',
+    },
+  };
+  const ml = MODE_LABELS[state.mode];
   const labels = state.mode === 'push' ? PUSH_STEP_LABELS : PULL_STEP_LABELS;
   const isRunning = state.phase === 'running';
-  const modeLabel = state.mode === 'push' ? 'Pushing to Cloudways' : 'Pulling from Cloudways';
-  const doneTitle = `${state.mode === 'push' ? 'Push' : 'Pull'} complete`;
-  const failedTitle = `${state.mode === 'push' ? 'Push' : 'Pull'} failed`;
   const headerTitle =
-    state.phase === 'running' ? modeLabel :
-    state.phase === 'done' ? doneTitle :
-    failedTitle;
-  const successMsg =
-    state.mode === 'push'
-      ? 'Successfully pushed to Cloudways.'
-      : 'Pull completed — site updated from Cloudways.';
+    state.phase === 'running' ? ml.running :
+    state.phase === 'done' ? ml.done :
+    ml.failed;
+  const successMsg = ml.success;
 
   const hasBytes =
     isRunning &&

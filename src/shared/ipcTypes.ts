@@ -30,6 +30,7 @@ export const CHANNELS = {
   // Undo
   LIST_UNDO: 'cs:listUndo',
   UNDO_PUSH: 'cs:undoPush',
+  DISMISS_UNDO: 'cs:dismissUndo',
 
   // Site mapping
   MAP_SITE: 'cs:mapSite',
@@ -327,6 +328,9 @@ export type UndoRecord = {
   targetUrl: string;
   createdAt: string;
   undoneAt?: string;
+  /** Set when the user confirms the push succeeded and dismisses the
+   *  undo option — cleans up snapshot files from the server. */
+  dismissedAt?: string;
 };
 
 export type ListUndoRequest = Record<string, never>;
@@ -334,6 +338,9 @@ export type ListUndoResponse = { records: UndoRecord[] };
 
 export type UndoPushRequest = { recordId: string };
 export type UndoPushResponse = { restored: boolean };
+
+export type DismissUndoRequest = { recordId: string };
+export type DismissUndoResponse = { dismissed: boolean };
 
 // --- Phase 8: Site mapping ---
 

@@ -45,6 +45,8 @@ import {
   type SmokeAppResponse,
   type UnmapSiteRequest,
   type UnmapSiteResponse,
+  type DismissUndoRequest,
+  type DismissUndoResponse,
   type UndoPushRequest,
   type UndoPushResponse,
 } from '../shared/ipcTypes';
@@ -84,6 +86,7 @@ export const ipcClient = {
   runJob: (req: RunJobRequest) => invoke<RunJobResponse>(CHANNELS.RUN_JOB, req),
   listUndo: () => invoke<ListUndoResponse>(CHANNELS.LIST_UNDO, {}),
   undoPush: (req: UndoPushRequest) => invoke<UndoPushResponse>(CHANNELS.UNDO_PUSH, req),
+  dismissUndo: (req: DismissUndoRequest) => invoke<DismissUndoResponse>(CHANNELS.DISMISS_UNDO, req),
   mapSite: (req: MapSiteRequest) => invoke<MapSiteResponse>(CHANNELS.MAP_SITE, req),
   unmapSite: (req: UnmapSiteRequest) => invoke<UnmapSiteResponse>(CHANNELS.UNMAP_SITE, req),
   getMapping: (req: GetMappingRequest) => invoke<GetMappingResponse>(CHANNELS.GET_MAPPING, req),
