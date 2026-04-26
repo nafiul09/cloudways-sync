@@ -42,6 +42,15 @@ export class UndoLedger {
     }
   }
 
+  async markDismissed(recordId: string): Promise<void> {
+    const records = await this.list();
+    const record = records.find((r) => r.id === recordId);
+    if (record) {
+      record.dismissedAt = new Date().toISOString();
+      await this.save(records);
+    }
+  }
+
   private async load(): Promise<UndoRecord[]> {
     try {
       const raw = await fs.promises.readFile(this.filePath, 'utf8');

@@ -20,7 +20,7 @@ import type {
   UndoSnapshot,
 } from '../../shared/ipcTypes';
 import { selectedWpContentSubdirs, shouldSkipPushStep, tarExcludePatternsForIncludes } from './Selective';
-import { sweepStaleJobs } from './cleanup';
+import { pruneRemoteSnapshots, sweepLocalSnapshots, sweepRemoteTempFiles, sweepStaleJobs } from './cleanup';
 import type { PullMetadata, PushPlan } from './types';
 import type { UndoLedger } from './UndoLedger';
 import type { AppLink } from './AppLink';
@@ -132,6 +132,14 @@ export class PushOrchestrator {
       await this.step(jobId, 'ssh', async () => {
         await ssh?.connect();
       });
+
+      // Housekeeping: clean orphaned temp files from previous crashed
+      // runs and prune old snapshots (remote + local).
+      await Promise.all([
+        sweepRemoteTempFiles(ssh, appRootPath),
+        pruneRemoteSnapshots(ssh, appRootPath),
+        sweepLocalSnapshots(this.userDataDir),
+      ]);
 
       // Step 2: Backup. API mode triggers a Cloudways backup; SFTP
       // mode falls back to a local-tar snapshot on the server (and
@@ -268,6 +276,7 @@ export class PushOrchestrator {
           this.progress(jobId, 'remote-db-import', 'running', 'Importing database…');
           await wpCli({ ssh: ssh as SshClient, appPublicPath }, [
             'db', 'import', remoteSql as string,
+            '--skip-plugins', '--skip-themes',
           ], { timeoutMs: 10 * 60 * 1000 });
         });
       }
@@ -283,6 +292,7 @@ export class PushOrchestrator {
             metadata.homeUrl,
             '--all-tables',
             '--skip-columns=guid',
+            '--skip-plugins', '--skip-themes',
           ], { timeoutMs: 10 * 60 * 1000 });
         });
       }
@@ -290,8 +300,8 @@ export class PushOrchestrator {
       // Step 10: Flush caches
       await this.step(jobId, 'cache-flush', async () => {
         // WP cache flush + rewrite flush on server
-        await wpCli({ ssh: ssh as SshClient, appPublicPath }, ['cache', 'flush']).catch(() => undefined);
-        await wpCli({ ssh: ssh as SshClient, appPublicPath }, ['rewrite', 'flush']).catch(() => undefined);
+        await wpCli({ ssh: ssh as SshClient, appPublicPath }, ['cache', 'flush', '--skip-plugins', '--skip-themes']).catch(() => undefined);
+        await wpCli({ ssh: ssh as SshClient, appPublicPath }, ['rewrite', 'flush', '--skip-plugins', '--skip-themes']).catch(() => undefined);
         // Varnish purge (best-effort, API mode only).
         await this.link.purgeVarnish?.().catch(() => undefined);
       });
@@ -331,6 +341,11 @@ export class PushOrchestrator {
         status: 'success',
       };
     } finally {
+      // Clean remote work-in-progress temp files (snapshot files are
+      // intentionally kept for undo). This duplicates step 11 on the
+      // success path but is the safety net for crashes / errors that
+      // skip that step.
+      await cleanupRemote(ssh, remoteSql, remoteSqlGz, remoteContentTarGz);
       await sftp?.end();
       await ssh?.end();
       // Clean up local staging — no reason to keep exported archives
@@ -402,7 +417,7 @@ export class PushOrchestrator {
     // Snapshot DB via wp-cli when available; fall back to a no-op
     // marker so undo can still restore files even without a DB dump.
     try {
-      const dumpCmd = buildWpCommand(appPublicPath, ['db', 'export', '-']);
+      const dumpCmd = buildWpCommand(appPublicPath, ['db', 'export', '-'], { skipPlugins: true });
       this.progress(jobId, 'remote-backup', 'running', 'Dumping current DB on server…');
       await execChecked(ssh, `${dumpCmd} | gzip > ${shellQuote(remoteSqlGz)}`);
     } catch (err) {
@@ -533,11 +548,11 @@ async function collectMetadata(ssh: SshClient, appPublicPath: string): Promise<P
   const [homeUrl, siteUrl, wpVersion, breezeStatus] = await Promise.all([
     wpOptionGet({ ssh, appPublicPath }, 'home'),
     wpOptionGet({ ssh, appPublicPath }, 'siteurl'),
-    wpCli({ ssh, appPublicPath }, ['core', 'version']).then((r) => r.stdout.trim()).catch(() => undefined),
+    wpCli({ ssh, appPublicPath }, ['core', 'version', '--skip-plugins', '--skip-themes']).then((r) => r.stdout.trim()).catch(() => undefined),
     detectBreezePlugin({ ssh, appPublicPath }),
   ]);
   const multisiteCheck = await ssh.exec(
-    buildWpCommand(appPublicPath, ['core', 'is-installed', '--network']),
+    buildWpCommand(appPublicPath, ['core', 'is-installed', '--network'], { skipPlugins: true }),
   );
   return {
     homeUrl,

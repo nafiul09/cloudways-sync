@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import type { ServiceContainerServices } from '@getflywheel/local/main';
 import { CloudwaysError } from '../cloudways/errors';
 import { AppPasswordStore, EncryptionUnavailableError, SftpCredentialStore } from '../credentials';
@@ -11,11 +12,14 @@ import { PushOrchestrator } from '../sync/PushOrchestrator';
 import { SiteMapper } from '../sync/SiteMapper';
 import { UndoLedger } from '../sync/UndoLedger';
 import { type AppLink, appLinkFor } from '../sync/AppLink';
+import { shellQuote } from '../remote/wpCli';
 import { restoreFromLocalSnapshot } from '../sync/snapshotUndo';
 import {
   CHANNELS,
   type CancelJobRequest,
   type CancelJobResponse,
+  type DismissUndoRequest,
+  type DismissUndoResponse,
   type GetMappingByAppRequest,
   type GetMappingByAppResponse,
   type GetMappingRequest,
@@ -471,6 +475,10 @@ export function registerSyncHandlers({
           emitProgress: (event) => sendIPCEvent(CHANNELS.JOB_PROGRESS, event),
         });
         await undoLedger.markUndone(record.id);
+        // Clean up local snapshot mirror — no longer needed after undo.
+        if (record.snapshot.localCachePath) {
+          await fs.promises.rm(record.snapshot.localCachePath, { recursive: true, force: true }).catch(() => undefined);
+        }
         return { restored: true };
       }
 
@@ -487,6 +495,58 @@ export function registerSyncHandlers({
       await client.waitForOperation(operationId);
       await undoLedger.markUndone(record.id);
       return { restored: true };
+    });
+  });
+
+  // Dismiss undo — user confirms the push is good, clean up snapshot.
+  addIpcAsyncListener(CHANNELS.DISMISS_UNDO, (...args: unknown[]) => {
+    const payload = args[0] as DismissUndoRequest | undefined;
+    return runHandler<DismissUndoResponse>(async () => {
+      if (!payload?.recordId) {
+        throw new CloudwaysError('AUTH_INVALID', 'recordId is required.', { retriable: false });
+      }
+      const record = await undoLedger.get(payload.recordId);
+      if (!record) {
+        throw new CloudwaysError('OPERATION_FAILED', `Undo record ${payload.recordId} not found.`, {
+          retriable: false,
+        });
+      }
+
+      // Clean remote snapshot files if SFTP-mode and snapshot exists.
+      if (record.linkMode === 'sftp' && record.snapshot && record.localSiteId) {
+        const mapping = await siteMapper.get(record.localSiteId);
+        if (mapping && mapping.linkMode === 'sftp' && sftpCreds) {
+          const link = appLinkFor(mapping, { sftpCreds });
+          try {
+            const ctx = await link.resolve();
+            const appRootPath = ctx.webRoot.endsWith('/public_html')
+              ? ctx.webRoot.slice(0, -'/public_html'.length)
+              : ctx.webRoot.replace(/\/[^/]+$/, '');
+            const snapshotDir = `${appRootPath}/private_html/.cwsync-snapshots`;
+            const { SshClient } = await import('../remote/SshClient');
+            const ssh = new SshClient(ctx.auth);
+            await ssh.connect();
+            // Remove the specific snap files + any pre-undo leftovers.
+            await ssh.exec(
+              `rm -f ${shellQuote(record.snapshot.remoteContentTarPath)} ` +
+                `${shellQuote(record.snapshot.remoteSqlGzPath)}; ` +
+                `rm -rf ${snapshotDir}/pre-undo-*; ` +
+                `rmdir ${shellQuote(snapshotDir)} 2>/dev/null; true`,
+            );
+            await ssh.end();
+          } catch {
+            // Best-effort — even if remote cleanup fails, we still
+            // dismiss locally so the button goes away.
+          }
+        }
+        // Clean local mirror.
+        if (record.snapshot.localCachePath) {
+          await fs.promises.rm(record.snapshot.localCachePath, { recursive: true, force: true }).catch(() => undefined);
+        }
+      }
+
+      await undoLedger.markDismissed(record.id);
+      return { dismissed: true };
     });
   });
 
