@@ -4,6 +4,7 @@ node_modules/
 # Build output
 lib/
 dist/
+renderer-bundle.js
 
 # Logs
 *.log
@@ -29,8 +30,7 @@ coverage/
 .vitest-cache/
 
 # Package output
-*.zip
-cloudsync-addon-*.tgz
+*.tgz
 
 # TypeScript incremental
 *.tsbuildinfo

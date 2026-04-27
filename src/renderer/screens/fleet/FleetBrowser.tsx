@@ -16,7 +16,7 @@ import {
   Title,
   Text,
   Button,
-} from '@getflywheel/local-components';
+} from '../../components/ui';
 import { ipcClient, IpcCallError, subscribeJobProgress } from '../../ipcClient';
 import type {
   AppDetail as AppDetailPayload,
