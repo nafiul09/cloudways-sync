@@ -1,4 +1,4 @@
-# Cloudways Sync for Local
+# Cloudways Sync for Local WP
 
 > Cloudways ↔ Local, one click.
 

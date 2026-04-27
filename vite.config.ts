@@ -27,16 +27,13 @@ export default defineConfig({
       fileName: () => 'index.js',
     },
     rollupOptions: {
-      // Local's renderer provides React + its own components. Don't bundle them.
-      // Local ships React 16.14 at runtime; don't bundle React/ReactDOM,
-      // and don't reference `react-dom/client` — that subpath doesn't
-      // exist in React 16 and requiring it would crash the entire addon.
+      // Local ships React 16.14 at runtime; don't bundle React/ReactDOM.
+      // @getflywheel/local and electron are provided by Local at runtime.
       external: [
         'react',
         'react-dom',
         '@getflywheel/local',
         '@getflywheel/local/renderer',
-        '@getflywheel/local-components',
         'electron',
       ],
     },

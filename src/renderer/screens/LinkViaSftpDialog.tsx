@@ -14,7 +14,7 @@
 // without touching Local's modal stack.
 
 import React, { useMemo, useState } from 'react';
-import { Banner, Button, Text } from '@getflywheel/local-components';
+import { Banner, Button, Text } from '../components/ui';
 import { ipcClient, IpcCallError } from '../ipcClient';
 import type {
   ProbeSftpResponse,
