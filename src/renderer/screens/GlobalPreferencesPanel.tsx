@@ -7,7 +7,7 @@ import {
   PrimaryButton,
   Title,
   Text,
-} from '@getflywheel/local-components';
+} from '../components/ui';
 import { ipcClient, IpcCallError } from '../ipcClient';
 import { MaskedEmail } from '../components/MaskedEmail';
 import type { ConnectionStatusPayload } from '../../shared/ipcTypes';

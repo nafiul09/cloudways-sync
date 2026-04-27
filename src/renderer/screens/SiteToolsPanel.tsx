@@ -8,7 +8,7 @@ import {
   Text,
   TextButton,
   Title,
-} from '@getflywheel/local-components';
+} from '../components/ui';
 import type { Site } from '@getflywheel/local';
 import { ipcClient, IpcCallError, subscribeJobProgress } from '../ipcClient';
 import { refreshSiteListIcons } from '../sidebar/injectSiteListIcons';
