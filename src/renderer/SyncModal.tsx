@@ -9,7 +9,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import ReactDOM from 'react-dom';
-import { Banner } from '@getflywheel/local-components';
+import { Banner } from './components/ui';
 import { subscribeJobDone, subscribeJobProgress } from './ipcClient';
 import type { JobDoneEvent, JobProgressEvent } from '../shared/ipcTypes';
 
