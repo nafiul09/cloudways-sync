@@ -8,8 +8,7 @@ Local, push local changes back, and selectively sync DB / uploads /
 plugins / themes — with safety backups on both sides and an "Undo
 push" button.
 
-**Status:** v0.1.0 alpha. Public functionality shipped; expect rough
-edges. See [CHANGELOG.md](./CHANGELOG.md) for the full release notes.
+**Status:** v0.1.0 Beta — public functionality shipped; expect rough edges.
 
 ## Features
 
@@ -48,85 +47,44 @@ edges. See [CHANGELOG.md](./CHANGELOG.md) for the full release notes.
 | Undo last push | ✅ (Cloudways `restoreApp`) | ✅ (re-applies the local-tar snapshot) |
 | Mode B (provision a new Cloudways app from Local) | ✅ | — |
 
-API mode requires your Cloudways email + API key from
-*My Profile → API Keys*. SFTP mode only needs the SSH/SFTP
-credentials shown under *Application Settings → SSH/SFTP* — useful
-for invited team members who don't have access to the account's API
-key. Open any site's **Tools → Cloudways Sync** tab to link it via
-either mode.
+### API mode
+
+Requires your Cloudways email + API key. You can find it in the
+Cloudways Platform under **My Profile → API Keys**.
+
+### SFTP mode
+
+Uses per-application SSH/SFTP credentials — useful for team members
+who don't have access to the account's API key. Before connecting:
+
+1. **Whitelist your IP** — in the Cloudways Platform, go to your
+   server's **Security → SSH/SFTP** tab and add your public IP to
+   the allowlist.
+2. **Enable shell access** — go to **Application Settings → General →
+   Application Credentials** and set Shell Access to **Enable**.
+3. Use the SSH/SFTP credentials shown under **Application Settings →
+   SSH/SFTP** (host, username, password) when linking in the add-on.
+
+Open any site's **Tools → Cloudways Sync** tab to link via either mode.
 
 ## Requirements
 
-- Node.js 20 or 22
-- Local WP (latest stable, >= 6.7.0)
-- A Cloudways account with API access (email + API key)
+- Local WP >= 6.7.0
+- A Cloudways account with API access (email + API key) or SSH/SFTP credentials
 
 ## Install
 
-This alpha is developer-install only — clone, build, link into Local.
-A one-click install via the Local Add-on Library will come once the
-addon is submitted there.
+1. Download the latest `.tgz` from [Releases](https://github.com/nafiul09/cloudways-sync/releases)
+2. Open Local WP → click **Add-ons** in the sidebar → **Installed**
+3. Click **Install from disk**, select the downloaded `.tgz` file, and open
+4. Restart Local WP completely (Cmd+Q / Alt+F4, then reopen)
+5. Open any site's **Tools** tab → **Cloudways Sync** to get started
 
-```bash
-git clone https://github.com/nafiul09/cloudways-sync.git
-cd cloudways-sync
-npm install
-npm run build
-npm run link   # copies into Local's add-ons directory
-```
-
-Then **fully quit Local** (Cmd+Q / Alt+F4 — not just close the window)
-and reopen. In Local, open any site's Tools tab and click
-**Cloudways Sync**, or click the Cloudways Sync icon in Local's sidebar,
-and paste your Cloudways email + API key.
-
-`npm run unlink` removes it again.
+![Installation walkthrough](https://github.com/nafiul09/cloudways-sync/releases/download/v0.1.0/cloudways-sync-installation.gif)
 
 ## Development
 
-```bash
-# Install dependencies
-npm install
-
-# Build main + renderer
-npm run build
-
-# Watch mode
-npm run dev
-
-# Copy into Local's add-ons directory
-npm run link
-
-# Remove it again
-npm run unlink
-
-# Lint / typecheck / test
-npm run lint
-npm run typecheck
-npm test
-```
-
-After `npm run link`, **fully quit Local** (Cmd+Q, not just close the
-window) and reopen. Then `Settings → Add-ons → Installed` — you
-should see Cloudways Sync listed.
-
-## Project layout
-
-```
-src/
-├── main/       Electron main-process code (IPC handlers, Cloudways
-│               client, SSH/SFTP, sync orchestrators)
-├── renderer/   React UI (sidebar, tools panel, modals, progress)
-└── shared/     Types imported by both processes
-
-scripts/
-├── link-to-local.mjs     Copy into Local's add-ons dir
-├── unlink-from-local.mjs Remove it
-└── smoke-cloudways.mjs   Live Cloudways API sanity check
-```
-
-See the implementation plan in `[plan]/` for the full engineering
-breakdown.
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full development setup.
 
 ## License
 
