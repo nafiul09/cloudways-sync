@@ -8,8 +8,6 @@ Local, push local changes back, and selectively sync DB / uploads /
 plugins / themes — with safety backups on both sides and an "Undo
 push" button.
 
-**Status:** v0.1.0 Beta — public functionality shipped; expect rough edges.
-
 ## Features
 
 - **Connect once** — API key stored encrypted via Electron
