@@ -10,7 +10,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import ReactDOM from 'react-dom';
 import { Banner } from './components/ui';
-import { subscribeJobDone, subscribeJobProgress } from './ipcClient';
+import { ipcClient, subscribeJobDone, subscribeJobProgress } from './ipcClient';
 import type { JobDoneEvent, JobProgressEvent } from '../shared/ipcTypes';
 
 // ---- Step labels (shared with SiteToolsPanel) ----
@@ -64,6 +64,7 @@ type ModalState =
   | { phase: 'idle' }
   | RunningState
   | { phase: 'done'; mode: SyncMode; appLabel: string }
+  | { phase: 'post-push'; appLabel: string; undoRecordId: string }
   | { phase: 'error'; mode: SyncMode; appLabel: string; error: string };
 
 let globalState: ModalState = { phase: 'idle' };
@@ -93,9 +94,10 @@ export function showSyncModal(mode: SyncMode, appLabel: string): void {
 /** Call if planPull/planPush or runJob throws. */
 export function failSyncModal(error: string): void {
   if (globalState.phase === 'idle') return;
+  const mode = 'mode' in globalState ? globalState.mode : 'push';
   setState({
     phase: 'error',
-    mode: globalState.mode,
+    mode,
     appLabel: globalState.appLabel,
     error,
   });
@@ -104,6 +106,21 @@ export function failSyncModal(error: string): void {
 /** Dismiss the modal (used by the Close button on failures). */
 export function dismissSyncModal(): void {
   setState({ phase: 'idle' });
+}
+
+/** Show the post-push modal with undo/confirm actions and cache guidance. */
+export function showPostPushModal(appLabel: string, undoRecordId: string): void {
+  setState({ phase: 'post-push', appLabel, undoRecordId });
+}
+
+// ---- Panel notification callback ----
+// SiteToolsPanel registers a callback to be notified when undo/confirm
+// completes inside the modal, so it can clear its lastPushUndoId state.
+let postPushActionCallback: (() => void) | undefined;
+
+export function onPostPushAction(cb: () => void): () => void {
+  postPushActionCallback = cb;
+  return () => { if (postPushActionCallback === cb) postPushActionCallback = undefined; };
 }
 
 // ---- IPC subscription (started once) ----
@@ -135,6 +152,7 @@ function ensureSubscribed() {
   });
 
   subscribeJobDone((event: JobDoneEvent) => {
+    // Don't transition if state is already post-push or not running
     if (globalState.phase !== 'running') return;
     if (event.status === 'success') {
       setState({
@@ -166,6 +184,75 @@ function formatBytes(bytes: number | undefined): string {
   return `${gb.toFixed(2)} GB`;
 }
 
+// ---- Post-push actions component ----
+
+function PostPushActions({ undoRecordId, appLabel }: { undoRecordId: string; appLabel: string }): React.ReactElement {
+  const [busy, setBusy] = useState(false);
+
+  const handleConfirm = async () => {
+    setBusy(true);
+    setState({ phase: 'running', mode: 'confirm', appLabel });
+    try {
+      await ipcClient.dismissUndo({ recordId: undoRecordId });
+      postPushActionCallback?.();
+      setState({ phase: 'done', mode: 'confirm', appLabel });
+    } catch (e) {
+      setState({ phase: 'error', mode: 'confirm', appLabel, error: e instanceof Error ? e.message : String(e) });
+    }
+  };
+
+  const handleUndo = async () => {
+    setBusy(true);
+    setState({ phase: 'running', mode: 'undo', appLabel });
+    try {
+      await ipcClient.undoPush({ recordId: undoRecordId });
+      postPushActionCallback?.();
+      setState({ phase: 'done', mode: 'undo', appLabel });
+    } catch (e) {
+      setState({ phase: 'error', mode: 'undo', appLabel, error: e instanceof Error ? e.message : String(e) });
+    }
+  };
+
+  return (
+    <>
+      <div style={styles.bannerSlot}>
+        <Banner variant="success">Successfully pushed to Cloudways.</Banner>
+      </div>
+      <div style={postPushStyles.infoBox}>
+        <p style={postPushStyles.infoText}>
+          <strong>Seeing CSS issues or domain redirects?</strong> Go to{' '}
+          <strong>Cloudways &rarr; Application Settings &rarr; Purge All Caches</strong> to
+          clear the server cache.
+        </p>
+        <p style={postPushStyles.infoText}>
+          If problems persist after purging, you can undo this push. Note: you will
+          need to purge cache again after undoing.
+        </p>
+        <p style={postPushStyles.infoText}>
+          Once your site looks correct, <strong>confirm the push</strong> to clean up
+          the temporary backup stored on your server.
+        </p>
+      </div>
+      <div style={postPushStyles.actions}>
+        <button type="button" style={postPushStyles.undoBtn} onClick={handleUndo} disabled={busy}>
+          Undo Push
+        </button>
+        <button type="button" style={postPushStyles.confirmBtn} onClick={handleConfirm} disabled={busy}>
+          Confirm Push
+        </button>
+      </div>
+      <button
+        type="button"
+        style={postPushStyles.closeLink}
+        onClick={dismissSyncModal}
+        disabled={busy}
+      >
+        Close without action
+      </button>
+    </>
+  );
+}
+
 // ---- Modal component ----
 
 function SyncModalContent(): React.ReactElement | null {
@@ -191,6 +278,9 @@ function SyncModalContent(): React.ReactElement | null {
   }, [state.phase]);
 
   if (state.phase === 'idle') return null;
+
+  // Post-push has its own layout — render it separately below.
+  const isPostPush = state.phase === 'post-push';
 
   const MODE_LABELS: Record<SyncMode, { running: string; done: string; failed: string; success: string }> = {
     push: {
@@ -218,10 +308,12 @@ function SyncModalContent(): React.ReactElement | null {
       success: 'Snapshot cleaned from server.',
     },
   };
-  const ml = MODE_LABELS[state.mode];
-  const labels = state.mode === 'push' ? PUSH_STEP_LABELS : PULL_STEP_LABELS;
+  const mode: SyncMode = isPostPush ? 'push' : (state as { mode: SyncMode }).mode;
+  const ml = MODE_LABELS[mode];
+  const labels = mode === 'push' ? PUSH_STEP_LABELS : PULL_STEP_LABELS;
   const isRunning = state.phase === 'running';
   const headerTitle =
+    isPostPush ? 'Push Completed' :
     state.phase === 'running' ? ml.running :
     state.phase === 'done' ? ml.done :
     ml.failed;
@@ -296,6 +388,13 @@ function SyncModalContent(): React.ReactElement | null {
                 Close
               </button>
             </>
+          )}
+
+          {isPostPush && (
+            <PostPushActions
+              undoRecordId={state.undoRecordId}
+              appLabel={state.appLabel}
+            />
           )}
 
           {state.phase === 'error' && (
@@ -501,5 +600,59 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 13,
     fontWeight: 500,
     cursor: 'pointer',
+  },
+};
+
+const postPushStyles: Record<string, React.CSSProperties> = {
+  infoBox: {
+    background: 'rgba(255,255,255,0.04)',
+    border: '1px solid rgba(255,255,255,0.08)',
+    borderRadius: 6,
+    padding: '14px 16px',
+    marginBottom: 16,
+  },
+  infoText: {
+    fontSize: 12,
+    lineHeight: 1.6,
+    color: 'rgba(255,255,255,0.7)',
+    margin: '0 0 8px',
+  },
+  actions: {
+    display: 'flex',
+    gap: 10,
+    marginBottom: 10,
+  },
+  undoBtn: {
+    flex: 1,
+    padding: '10px 0',
+    border: '1px solid rgba(255,170,100,0.4)',
+    borderRadius: 6,
+    background: 'rgba(255,170,100,0.08)',
+    color: '#ffaa64',
+    fontSize: 13,
+    fontWeight: 500,
+    cursor: 'pointer',
+  },
+  confirmBtn: {
+    flex: 1,
+    padding: '10px 0',
+    border: '1px solid rgba(81,187,123,0.4)',
+    borderRadius: 6,
+    background: 'rgba(81,187,123,0.12)',
+    color: '#51bb7b',
+    fontSize: 13,
+    fontWeight: 500,
+    cursor: 'pointer',
+  },
+  closeLink: {
+    display: 'block',
+    width: '100%',
+    padding: '6px 0',
+    border: 'none',
+    background: 'transparent',
+    color: 'rgba(255,255,255,0.4)',
+    fontSize: 11,
+    cursor: 'pointer',
+    textAlign: 'center' as const,
   },
 };

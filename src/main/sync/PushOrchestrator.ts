@@ -272,6 +272,15 @@ export class PushOrchestrator {
           this.progress(jobId, 'remote-db-import', 'running', 'Decompressing database on server…');
           await execChecked(ssh as SshClient, `gzip -df ${shellQuote(remoteSqlGz as string)}`);
 
+          // Drop all existing tables before import. Without this, tables
+          // from a previous site that don't exist in the local export
+          // survive the import and leave stale URLs in the database.
+          this.progress(jobId, 'remote-db-import', 'running', 'Resetting remote database…');
+          await wpCli({ ssh: ssh as SshClient, appPublicPath }, [
+            'db', 'reset', '--yes',
+            '--skip-plugins', '--skip-themes',
+          ], { timeoutMs: 2 * 60 * 1000 });
+
           // Import via wp db import
           this.progress(jobId, 'remote-db-import', 'running', 'Importing database…');
           await wpCli({ ssh: ssh as SshClient, appPublicPath }, [
@@ -286,27 +295,53 @@ export class PushOrchestrator {
         this.progress(jobId, 'search-replace', 'skipped');
       } else {
         await this.step(jobId, 'search-replace', async () => {
-          await wpCli({ ssh: ssh as SshClient, appPublicPath }, [
+          const wpCtx = { ssh: ssh as SshClient, appPublicPath };
+          const srOpts = { timeoutMs: 10 * 60 * 1000 };
+
+          // Use the mapping's remote URL (known-good) instead of reading
+          // from the remote DB, which may already be corrupted from a
+          // previous failed push.
+          const targetUrl = ctx.remoteUrl || metadata.homeUrl;
+
+          console.log('[CWS Push] search-replace: localUrl=%s → targetUrl=%s (mapping=%s, dbHome=%s)',
+            plan.localUrl, targetUrl, ctx.remoteUrl, metadata.homeUrl);
+
+          // Primary search-replace
+          const primary = await wpCli(wpCtx, [
             'search-replace',
             plan.localUrl,
-            metadata.homeUrl,
+            targetUrl,
             '--all-tables',
             '--skip-columns=guid',
             '--skip-plugins', '--skip-themes',
-          ], { timeoutMs: 10 * 60 * 1000 });
+          ], srOpts);
+          console.log('[CWS Push] primary search-replace stdout: %s', primary.stdout.trim());
+
+          // Protocol-flipped pass (http↔https) to catch mixed references
+          const flipped = flipProtocol(plan.localUrl);
+          if (flipped !== plan.localUrl) {
+            const variant = await wpCli(wpCtx, [
+              'search-replace',
+              flipped,
+              targetUrl,
+              '--all-tables',
+              '--skip-columns=guid',
+              '--skip-plugins', '--skip-themes',
+            ], srOpts);
+            console.log('[CWS Push] flipped search-replace (%s) stdout: %s', flipped, variant.stdout.trim());
+          }
+
+          // Direct SQL safety net: force home and siteurl via raw SQL.
+          // This bypasses wp-cli bootstrapping issues and guarantees the
+          // two most critical options are always correct.
+          const sqlUpdate = `UPDATE wp_options SET option_value = '${targetUrl.replace(/'/g, "\\'")}' WHERE option_name IN ('home', 'siteurl');`;
+          console.log('[CWS Push] SQL safety net: %s', sqlUpdate);
+          await wpCli(wpCtx, ['db', 'query', sqlUpdate, '--skip-plugins', '--skip-themes']);
         });
       }
 
-      // Step 10: Flush caches
-      await this.step(jobId, 'cache-flush', async () => {
-        // WP cache flush + rewrite flush on server
-        await wpCli({ ssh: ssh as SshClient, appPublicPath }, ['cache', 'flush', '--skip-plugins', '--skip-themes']).catch(() => undefined);
-        await wpCli({ ssh: ssh as SshClient, appPublicPath }, ['rewrite', 'flush', '--skip-plugins', '--skip-themes']).catch(() => undefined);
-        // Varnish purge (best-effort, API mode only).
-        await this.link.purgeVarnish?.().catch(() => undefined);
-      });
-
-      // Step 10b: Re-activate Breeze if requested
+      // Step 10: Re-activate Breeze BEFORE cache flush so its purge
+      // commands are available (DB import leaves it deactivated).
       if (plan.reactivateBreeze) {
         await this.step(jobId, 'breeze-reactivate', async () => {
           await wpCli({ ssh: ssh as SshClient, appPublicPath }, ['plugin', 'activate', 'breeze']);
@@ -315,7 +350,27 @@ export class PushOrchestrator {
         this.progress(jobId, 'breeze-reactivate', 'skipped');
       }
 
-      // Step 11: Cleanup remote temp files (snapshot files are kept
+      // Step 11: Flush caches
+      await this.step(jobId, 'cache-flush', async () => {
+        const wpCtx = { ssh: ssh as SshClient, appPublicPath };
+        // WP object cache + rewrite flush
+        await wpCli(wpCtx, ['cache', 'flush', '--skip-plugins', '--skip-themes']).catch(() => undefined);
+        await wpCli(wpCtx, ['rewrite', 'flush', '--skip-plugins', '--skip-themes']).catch(() => undefined);
+        // Varnish purge via Cloudways API (API mode only).
+        await this.link.purgeVarnish?.().catch(() => undefined);
+        // Breeze: purge Varnish + file-based page cache.
+        // Breeze is now active (reactivated above), so these commands work.
+        await wpCli(wpCtx, ['breeze', 'purge', '--varnish', '--skip-themes']).catch(() => undefined);
+        await wpCli(wpCtx, ['breeze', 'purge', '--cache', '--skip-themes']).catch(() => undefined);
+        // Direct varnish-admin purge (works even without Breeze).
+        await (ssh as SshClient).exec('curl -s -X PURGE http://127.0.0.1/.*').catch(() => undefined);
+        // Remove Breeze file cache directory as a final safety net.
+        await (ssh as SshClient).exec(
+          `rm -rf ${shellQuote(appPublicPath + '/wp-content/cache/breeze')}`,
+        ).catch(() => undefined);
+      });
+
+      // Step 12: Cleanup remote temp files (snapshot files are kept
       // for undo — they're cleaned only after the user confirms).
       await this.step(jobId, 'cleanup', async () => {
         await cleanupRemote(ssh, remoteSql, remoteSqlGz, remoteContentTarGz);
@@ -528,6 +583,13 @@ export class PushOrchestrator {
       throw new RemoteError('SSH_COMMAND_FAILED', 'Push job was cancelled.', { retriable: false });
     }
   }
+}
+
+/** Swap http↔https in a URL. Returns the input unchanged if not http(s). */
+function flipProtocol(url: string): string {
+  if (url.startsWith('https://')) return 'http://' + url.slice(8);
+  if (url.startsWith('http://')) return 'https://' + url.slice(7);
+  return url;
 }
 
 /** Convert an absolute remote path under the SFTP user's home into the

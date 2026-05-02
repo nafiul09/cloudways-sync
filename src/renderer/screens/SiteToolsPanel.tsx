@@ -12,7 +12,7 @@ import {
 import type { Site } from '@getflywheel/local';
 import { ipcClient, IpcCallError, subscribeJobProgress } from '../ipcClient';
 import { refreshSiteListIcons } from '../sidebar/injectSiteListIcons';
-import { showSyncModal, dismissSyncModal, failSyncModal } from '../SyncModal';
+import { showSyncModal, dismissSyncModal, failSyncModal, showPostPushModal, onPostPushAction } from '../SyncModal';
 import { MaskedEmail } from '../components/MaskedEmail';
 import { LinkViaSftpDialog } from './LinkViaSftpDialog';
 import type {
@@ -401,6 +401,11 @@ function LinkedState({
     return () => { cancelled = true; };
   }, [mapping.appId]);
 
+  // Listen for undo/confirm actions from the post-push modal
+  useEffect(() => {
+    return onPostPushAction(() => setLastPushUndoId(undefined));
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     setAppDetail(undefined);
@@ -472,13 +477,17 @@ function LinkedState({
         reactivateBreeze: breezeStatus?.active ? reactivateBreeze : false,
       });
       await ipcClient.runJob({ planId: plan.planId });
+      // Push succeeded — show post-push modal with undo/confirm
       try {
         const undos = await ipcClient.listUndo();
         const latest = undos.records.find(
           (r) => r.appId === mapping.appId && !r.undoneAt && !r.dismissedAt,
         );
-        if (latest) setLastPushUndoId(latest.id);
-      } catch { /* non-fatal */ }
+        if (latest) {
+          setLastPushUndoId(latest.id);
+          showPostPushModal(mapping.appLabel, latest.id);
+        }
+      } catch { /* non-fatal — modal will show generic done */ }
     } catch (e) {
       failSyncModal(e instanceof Error ? e.message : String(e));
     } finally {
@@ -800,6 +809,11 @@ function SftpLinkedState({
     return () => { cancelled = true; };
   }, [site.id]);
 
+  // Listen for undo/confirm actions from the post-push modal
+  useEffect(() => {
+    return onPostPushAction(() => setLastPushUndoId(undefined));
+  }, []);
+
   // Prevent Electron from closing while any operation is in flight.
   useEffect(() => {
     if (!pushBusy && !pullBusy && !undoBusy) return;
@@ -827,13 +841,17 @@ function SftpLinkedState({
         includes: pushIncludes,
       });
       await ipcClient.runJob({ planId: plan.planId });
+      // Push succeeded — show post-push modal with undo/confirm
       try {
         const undos = await ipcClient.listUndo();
         const latest = undos.records.find(
           (r) => r.localSiteId === site.id && !r.undoneAt && !r.dismissedAt,
         );
-        if (latest) setLastPushUndoId(latest.id);
-      } catch { /* non-fatal */ }
+        if (latest) {
+          setLastPushUndoId(latest.id);
+          showPostPushModal(mapping.appLabel, latest.id);
+        }
+      } catch { /* non-fatal — modal will show generic done */ }
     } catch (e) {
       failSyncModal(e instanceof Error ? e.message : String(e));
     } finally {
