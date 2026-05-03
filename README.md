@@ -20,16 +20,25 @@ push" button.
   same Local install.
 - **Pull** any Cloudways WordPress app into a new or existing Local
   site. Archive-based transfer (tar on server → one download) with a
-  pre-pull Cloudways backup (API mode).
+  pre-pull Cloudways backup (API mode). Fleet browser lets you pull
+  any app as a new Local site in one click.
 - **Push** a Local site back to a linked Cloudways app. Pre-push
   remote backup, optional Breeze re-activation, and one-click undo.
+  Post-push review checklist ensures you verify the live site before
+  confirming or undoing.
 - **Selective sync** — per-subdir checkboxes (database, uploads,
   plugins, themes, mu-plugins, languages). Unselected subdirs on the
   destination stay untouched; deletions inside selected subdirs
   propagate correctly.
-- **Live progress modal** with step labels, bytes transferred, and
+- **Wizard modal** — stepped sync flow (Confirm → Configure → Running
+  → Review/Done) with a visual phase stepper, safety warnings, and
+  side-by-side action buttons. Escape is blocked during post-push
+  review to prevent orphaned backups.
+- **Live progress** with step labels, bytes transferred, and
   percentage — blocks UI while a sync runs so you can't accidentally
   close Local mid-transfer.
+- **WP-CLI connection test** — test SSH connectivity and WP-CLI from
+  the fleet browser before pulling.
 - **Humanized errors** — every failure path has a user-facing message
   with the underlying code exposed for support.
 

@@ -2,7 +2,6 @@ import React, { useEffect, useState } from 'react';
 import {
   Banner,
   Button,
-  Checkbox,
   FlySelect,
   Spinner,
   Text,
@@ -10,9 +9,10 @@ import {
   Title,
 } from '../components/ui';
 import type { Site } from '@getflywheel/local';
-import { ipcClient, IpcCallError, subscribeJobProgress } from '../ipcClient';
+import { ipcClient, IpcCallError } from '../ipcClient';
 import { refreshSiteListIcons } from '../sidebar/injectSiteListIcons';
-import { showSyncModal, dismissSyncModal, failSyncModal, showPostPushModal, onPostPushAction } from '../SyncModal';
+import { showSyncModal, dismissSyncModal, failSyncModal, onPostPushAction, openWizard } from '../SyncModal';
+import type { WizardContext } from '../SyncModal';
 import { MaskedEmail } from '../components/MaskedEmail';
 import { LinkViaSftpDialog } from './LinkViaSftpDialog';
 import type {
@@ -21,9 +21,6 @@ import type {
   AppSummary,
   BreezeStatus,
   ConnectionStatusPayload,
-  JobProgressEvent,
-  PullIncludes,
-  PushIncludes,
   ServerSummary,
   SftpSiteMapping,
   SiteMapping,
@@ -31,35 +28,31 @@ import type {
 } from '../../shared/ipcTypes';
 import { isApiMapping } from '../../shared/ipcTypes';
 
-const PUSH_STEP_LABELS: Record<string, string> = {
-  validate: 'Validating',
-  'remote-backup': 'Backing up remote',
-  ssh: 'Connecting over SSH',
-  metadata: 'Reading remote metadata',
-  'local-export-db': 'Exporting local DB',
-  'upload-db': 'Uploading database',
-  'upload-content': 'Uploading wp-content',
-  'remote-db-import': 'Importing DB on server',
-  'search-replace': 'Rewriting URLs',
-  'cache-flush': 'Flushing caches',
-  'breeze-reactivate': 'Re-activating Breeze',
-  cleanup: 'Cleaning up',
-};
 
-const PULL_STEP_LABELS: Record<string, string> = {
-  validate: 'Validating',
-  backup: 'Taking Cloudways backup',
-  ssh: 'Connecting over SSH',
-  metadata: 'Reading WordPress metadata',
-  'db-export': 'Exporting remote DB',
-  'download-db': 'Downloading DB dump',
-  'download-content': 'Downloading wp-content',
-  'local-site': 'Importing into Local',
-  'local-content': 'Installing wp-content',
-  'local-db': 'Importing DB into Local',
-  'search-replace': 'Rewriting URLs',
-  manifest: 'Writing manifest',
-};
+// Cloud-with-down-arrow (Pull) and cloud-with-up-arrow (Push). Inherits
+// currentColor from the surrounding <Button>, so it recolors on hover.
+// Tray + arrow icons. Push reuses the same arrow path but rotates it 180°
+// around its center (12, 9.355) so the tray stays put while the arrow flips.
+const TRAY_D = 'M2.24994 19.2501V16.7501C2.24994 16.1978 2.69765 15.7501 3.24994 15.7501C3.80222 15.7501 4.24994 16.1978 4.24994 16.7501V19.2501C4.24994 19.5262 4.4738 19.7501 4.74994 19.7501H19.2499C19.5261 19.7501 19.7499 19.5262 19.7499 19.2501V16.7501C19.7499 16.1978 20.1977 15.7501 20.7499 15.7501C21.3022 15.7501 21.7499 16.1978 21.7499 16.7501V19.2501C21.7499 20.5444 20.7663 21.6092 19.5058 21.7374L19.2499 21.7501H4.74994C3.36923 21.7501 2.24994 20.6308 2.24994 19.2501Z';
+const ARROW_D = 'M11 3.25006C11 2.69778 11.4477 2.25006 12 2.25006C12.5522 2.25006 13 2.69778 13 3.25006V13.336L15.7929 10.543C16.1834 10.1525 16.8165 10.1525 17.207 10.543C17.5975 10.9336 17.5975 11.5666 17.207 11.9571L12.707 16.4571C12.3165 16.8476 11.6834 16.8476 11.2929 16.4571L6.79292 11.9571C6.4024 11.5666 6.4024 10.9336 6.79292 10.543C7.15904 10.1769 7.73804 10.1543 8.13081 10.4747L8.20699 10.543L11 13.336V3.25006Z';
+function PullIcon(): React.ReactElement {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width={18} height={18} fill="none" aria-hidden style={{ flexShrink: 0 }}>
+      <path d={TRAY_D} fill="currentColor" />
+      <path d={ARROW_D} fill="currentColor" />
+    </svg>
+  );
+}
+function PushIcon(): React.ReactElement {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width={18} height={18} fill="none" aria-hidden style={{ flexShrink: 0 }}>
+      <path d={TRAY_D} fill="currentColor" />
+      <g transform="rotate(180 12 9.355)">
+        <path d={ARROW_D} fill="currentColor" />
+      </g>
+    </svg>
+  );
+}
 
 const CWS_CSS = `
   @keyframes cws-spin {
@@ -335,19 +328,7 @@ export function SiteToolsPanel({ site }: { site: Site }): React.ReactElement {
   );
 }
 
-// --- Connected + Mapped: Push & Pull controls ---
-
-type SyncStep = { stepId: string; percent?: number; detail?: string };
-
-const DEFAULT_INCLUDES = {
-  database: true,
-  wpContent: true,
-  uploads: true,
-  plugins: true,
-  themes: true,
-  muPlugins: true,
-  languages: true,
-};
+// --- Connected + Mapped: linked status + wizard trigger ---
 
 function LinkedState({
   site,
@@ -360,33 +341,20 @@ function LinkedState({
   mapping: ApiSiteMapping;
   onUnlink: () => void;
 }): React.ReactElement {
-  const [mode, setMode] = useState<'push' | 'pull'>('push');
+  const [appDetail, setAppDetail] = useState<AppDetail | undefined>();
+  const [credentialBusy, setCredentialBusy] = useState(false);
+  const [credentialError, setCredentialError] = useState<string | undefined>();
+  const [breezeStatus, setBreezeStatus] = useState<BreezeStatus | undefined>();
 
-  // --- Push state ---
-  const [pushBusy, setPushBusy] = useState(false);
-  const [pushStep, setPushStep] = useState<SyncStep | undefined>();
-  const [pushIncludes, setPushIncludes] = useState<PushIncludes>({ ...DEFAULT_INCLUDES });
+  // Undo fallback (in case user dismisses the post-push modal)
   const [lastPushUndoId, setLastPushUndoId] = useState<string | undefined>();
   const [undoBusy, setUndoBusy] = useState(false);
   const [undoResult, setUndoResult] = useState<string | undefined>();
   const [undoErr, setUndoErr] = useState<string | undefined>();
 
-  // --- Pull state ---
-  const [pullBusy, setPullBusy] = useState(false);
-  const [pullStep, setPullStep] = useState<SyncStep | undefined>();
-  const [pullIncludes, setPullIncludes] = useState<PullIncludes>({ ...DEFAULT_INCLUDES });
-  const [appDetail, setAppDetail] = useState<AppDetail | undefined>();
-  const [credentialBusy, setCredentialBusy] = useState(false);
-  const [credentialError, setCredentialError] = useState<string | undefined>();
-
-  // --- Breeze state ---
-  const [breezeStatus, setBreezeStatus] = useState<BreezeStatus | undefined>();
-  const [reactivateBreeze, setReactivateBreeze] = useState(true);
-
-  const busy = pushBusy || pullBusy || credentialBusy;
   const canSync = Boolean(appDetail?.sftp.password);
 
-  // Hydrate undo state from ledger on mount so the button survives restarts.
+  // Hydrate undo state from ledger on mount.
   useEffect(() => {
     let cancelled = false;
     ipcClient.listUndo()
@@ -427,74 +395,33 @@ function LinkedState({
     return () => { cancelled = true; };
   }, [appDetail?.sftp.password, mapping.serverId, mapping.appId]);
 
-  // Subscribe to job progress for whichever operation is running.
-  useEffect(() => {
-    const unsubscribe = subscribeJobProgress((event: JobProgressEvent) => {
-      if (!pushBusy && !pullBusy) return;
-      const percent =
-        typeof event.totalBytes === 'number' &&
-        event.totalBytes > 0 &&
-        typeof event.bytesTransferred === 'number'
-          ? Math.min(100, Math.round((event.bytesTransferred / event.totalBytes) * 100))
-          : undefined;
-      const step: SyncStep = { stepId: event.stepId, percent, detail: event.detail };
-      if (event.status === 'running') {
-        if (pushBusy) setPushStep(step);
-        if (pullBusy) setPullStep(step);
-      } else if (event.status === 'success' || event.status === 'failed') {
-        setPushStep(undefined);
-        setPullStep(undefined);
-      }
-    });
-    return unsubscribe;
-  }, [pushBusy, pullBusy]);
-
-  // Prevent Electron from closing while any operation is in flight.
-  useEffect(() => {
-    if (!pushBusy && !pullBusy && !undoBusy) return;
-    const handler = (e: BeforeUnloadEvent) => {
-      e.preventDefault();
-      e.returnValue = 'A sync operation is in progress. Closing now may leave your site in a broken state.';
-    };
-    window.addEventListener('beforeunload', handler);
-    return () => window.removeEventListener('beforeunload', handler);
-  }, [pushBusy, pullBusy, undoBusy]);
-
-  // --- Push handler ---
-  const runPush = async () => {
-    setPushBusy(true);
-    setPushStep(undefined);
-    setLastPushUndoId(undefined);
-    showSyncModal('push', mapping.appLabel);
+  const createCredentials = async () => {
+    setCredentialBusy(true);
+    setCredentialError(undefined);
     try {
-      const plan = await ipcClient.planPush({
-        serverId: mapping.serverId,
-        appId: mapping.appId,
-        localSiteId: site.id,
-        localUrl: site.url || `http://${site.domain}`,
-        webRootPath: site.paths?.webRoot || `${site.path}/app/public`,
-        includes: pushIncludes,
-        reactivateBreeze: breezeStatus?.active ? reactivateBreeze : false,
-      });
-      await ipcClient.runJob({ planId: plan.planId });
-      // Push succeeded — show post-push modal with undo/confirm
-      try {
-        const undos = await ipcClient.listUndo();
-        const latest = undos.records.find(
-          (r) => r.appId === mapping.appId && !r.undoneAt && !r.dismissedAt,
-        );
-        if (latest) {
-          setLastPushUndoId(latest.id);
-          showPostPushModal(mapping.appLabel, latest.id);
-        }
-      } catch { /* non-fatal — modal will show generic done */ }
+      const res = await ipcClient.createAppCredential({ serverId: mapping.serverId, appId: mapping.appId });
+      setAppDetail((prev) => prev
+        ? { ...prev, sftp: res.sftp, db: { ...prev.db, password: res.sftp.password } }
+        : prev);
     } catch (e) {
-      failSyncModal(e instanceof Error ? e.message : String(e));
+      setCredentialError(e instanceof Error ? e.message : String(e));
     } finally {
-      setPushBusy(false);
-      setPushStep(undefined);
+      setCredentialBusy(false);
     }
   };
+
+  const wizardCtx = (mode: 'push' | 'pull'): WizardContext => ({
+    mode,
+    appLabel: mapping.appLabel,
+    siteId: site.id,
+    localUrl: site.url || `http://${site.domain}`,
+    webRootPath: site.paths?.webRoot || `${site.path}/app/public`,
+    remoteUrl: mapping.remoteUrl,
+    linkMode: 'api',
+    serverId: mapping.serverId,
+    appId: mapping.appId,
+    breezeActive: breezeStatus?.active,
+  });
 
   const runUndo = async () => {
     if (!lastPushUndoId) return;
@@ -515,7 +442,7 @@ function LinkedState({
     }
   };
 
-  const dismissUndo = async () => {
+  const dismissUndoFn = async () => {
     if (!lastPushUndoId) return;
     setUndoBusy(true);
     setUndoErr(undefined);
@@ -533,63 +460,6 @@ function LinkedState({
       setUndoBusy(false);
     }
   };
-
-  // --- Pull handler ---
-  const runPull = async () => {
-    setPullBusy(true);
-    setPullStep(undefined);
-    showSyncModal('pull', mapping.appLabel);
-    try {
-      const plan = await ipcClient.planPull({
-        serverId: mapping.serverId,
-        appId: mapping.appId,
-        destinationName: mapping.appLabel,
-        serverLabel: mapping.serverLabel,
-        localSiteId: site.id,
-        includes: pullIncludes,
-      });
-      await ipcClient.runJob({ planId: plan.planId });
-    } catch (e) {
-      failSyncModal(e instanceof Error ? e.message : String(e));
-    } finally {
-      setPullBusy(false);
-      setPullStep(undefined);
-    }
-  };
-
-  const createCredentials = async () => {
-    setCredentialBusy(true);
-    setCredentialError(undefined);
-    try {
-      const res = await ipcClient.createAppCredential({ serverId: mapping.serverId, appId: mapping.appId });
-      setAppDetail((prev) => prev
-        ? { ...prev, sftp: res.sftp, db: { ...prev.db, password: res.sftp.password } }
-        : prev);
-    } catch (e) {
-      setCredentialError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setCredentialBusy(false);
-    }
-  };
-
-  // --- Labels ---
-  const pushLabel = (() => {
-    if (!pushBusy) return 'Push to Cloudways';
-    if (!pushStep) return 'Pushing…';
-    const label = PUSH_STEP_LABELS[pushStep.stepId] ?? pushStep.stepId;
-    return pushStep.percent != null
-      ? `Pushing — ${label} (${pushStep.percent}%)`
-      : `Pushing — ${label}`;
-  })();
-
-  const pullLabel = (() => {
-    if (!pullBusy) return 'Pull from Cloudways';
-    if (!pullStep) return 'Pulling…';
-    const label = PULL_STEP_LABELS[pullStep.stepId] ?? pullStep.stepId;
-    return pullStep.percent != null
-      ? `Pulling — ${label} (${pullStep.percent}%)`
-      : `Pulling — ${label}`;
-  })();
 
   return (
     <section>
@@ -641,7 +511,7 @@ function LinkedState({
               Create app-level credentials and enable SSH shell access before testing, pulling, or pushing this WordPress site.
             </Text>
           </div>
-          <Button onClick={createCredentials} disabled={busy}>
+          <Button onClick={createCredentials} disabled={credentialBusy}>
             {credentialBusy ? 'Creating…' : 'Create SSH/SFTP + shell access'}
           </Button>
           {credentialError && (
@@ -652,100 +522,36 @@ function LinkedState({
         </div>
       )}
 
-      {/* Push / Pull tab switcher */}
-      <div style={styles.tabs}>
-        <button
-          type="button"
-          style={mode === 'push' ? styles.tabActive : styles.tab}
-          onClick={() => setMode('push')}
-          disabled={busy}
-        >
-          Push
-        </button>
-        <button
-          type="button"
-          style={mode === 'pull' ? styles.tabActive : styles.tab}
-          onClick={() => setMode('pull')}
-          disabled={busy}
-        >
-          Pull
-        </button>
+      {/* Pull / Push action buttons — open wizard modal */}
+      <div style={styles.actionBar}>
+        <Button onClick={() => openWizard(wizardCtx('pull'))} disabled={!canSync || undoBusy}>
+          <PullIcon />
+          Pull from Cloudways
+        </Button>
+        <Button onClick={() => openWizard(wizardCtx('push'))} disabled={!canSync || undoBusy} style={{ marginLeft: 8 }}>
+          <PushIcon />
+          Push to Cloudways
+        </Button>
       </div>
 
-      {mode === 'push' ? (
-        <>
-          {pushBusy && pushStep?.detail && (
-            <div style={{ marginBottom: 8, fontSize: 11, opacity: 0.65 }}>
-              {pushStep.detail}
-            </div>
-          )}
-          {!pushBusy && (
-            <>
-              <SelectivePanel heading="Include in push" includes={pushIncludes} onChange={setPushIncludes} />
-              {breezeStatus?.active && (
-                <div style={styles.breezeNotice}>
-                  <div style={styles.breezeHeader}>
-                    <Checkbox
-                      checked={reactivateBreeze}
-                      onChange={() => setReactivateBreeze(!reactivateBreeze)}
-                    />
-                    <div>
-                      <Text style={styles.breezeTitle}>Breeze caching plugin detected</Text>
-                      <Text size="caption" style={styles.breezeDesc}>
-                        Re-activate Breeze on Cloudways after push. The plugin is excluded
-                        from sync because it requires Cloudways server configuration to function.
-                      </Text>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-          {undoErr && <div style={styles.banner}><Banner variant="error">{undoErr}</Banner></div>}
-          {undoResult && <div style={styles.banner}><Banner variant="success">{undoResult}</Banner></div>}
-          <div style={styles.actionBar}>
-            <Button onClick={runPush} disabled={busy || !canSync}>
-              {pushLabel}
-            </Button>
-            {lastPushUndoId && !pushBusy && (
-              <>
-                <Button onClick={runUndo} disabled={undoBusy} style={{ marginLeft: 8 }}>
-                  {undoBusy ? 'Restoring…' : 'Undo last push'}
-                </Button>
-                <Button onClick={dismissUndo} disabled={undoBusy} style={{ marginLeft: 8 }}>
-                  Confirm push
-                </Button>
-              </>
-            )}
-          </div>
-        </>
-      ) : (
-        <>
-          {pullBusy && pullStep?.detail && (
-            <div style={{ marginBottom: 8, fontSize: 11, opacity: 0.65 }}>
-              {pullStep.detail}
-            </div>
-          )}
-          {!pullBusy && (
-            <SelectivePanel heading="Include in pull" includes={pullIncludes} onChange={setPullIncludes} />
-          )}
-          <div style={styles.actionBar}>
-            <Button onClick={runPull} disabled={busy || !canSync}>
-              {pullLabel}
-            </Button>
-          </div>
-        </>
+      {/* Undo fallback — safety net if user closes post-push modal */}
+      {undoErr && <div style={styles.banner}><Banner variant="error">{undoErr}</Banner></div>}
+      {undoResult && <div style={styles.banner}><Banner variant="success">{undoResult}</Banner></div>}
+      {lastPushUndoId && (
+        <div style={{ ...styles.actionBar, marginTop: 12 }}>
+          <Button onClick={runUndo} disabled={undoBusy} style={{ marginRight: 8 }}>
+            {undoBusy ? 'Restoring…' : 'Undo last push'}
+          </Button>
+          <Button onClick={dismissUndoFn} disabled={undoBusy}>
+            Confirm push
+          </Button>
+        </div>
       )}
     </section>
   );
 }
 
-// --- Linked via SFTP-only mode (Phase 1 placeholder) ---
-//
-// The full Push / Pull UI for SFTP mappings is wired up in later phases.
-// For Phase 1 we ship the type plumbing and a minimal "linked" view so
-// existing API-mode users see no regressions while the rest of the
-// feature lands behind the scenes.
+// --- Linked via SFTP-only mode ---
 
 function SftpLinkedState({
   site,
@@ -756,45 +562,13 @@ function SftpLinkedState({
   mapping: SftpSiteMapping;
   onUnlink: () => void;
 }): React.ReactElement {
-  // SFTP mode supports push + undo + pull (read-only) as of Phase 4.
-  const [mode, setMode] = useState<'push' | 'pull'>('push');
-  const [pushBusy, setPushBusy] = useState(false);
-  const [pushStep, setPushStep] = useState<SyncStep | undefined>();
-  const [pushIncludes, setPushIncludes] = useState<PushIncludes>({ ...DEFAULT_INCLUDES });
+  // Undo fallback (in case user dismisses the post-push modal)
   const [lastPushUndoId, setLastPushUndoId] = useState<string | undefined>();
   const [undoBusy, setUndoBusy] = useState(false);
   const [undoResult, setUndoResult] = useState<string | undefined>();
   const [undoErr, setUndoErr] = useState<string | undefined>();
 
-  // --- Pull state ---
-  const [pullBusy, setPullBusy] = useState(false);
-  const [pullStep, setPullStep] = useState<SyncStep | undefined>();
-  const [pullIncludes, setPullIncludes] = useState<PullIncludes>({ ...DEFAULT_INCLUDES });
-
-  const busy = pushBusy || pullBusy || undoBusy;
-
-  useEffect(() => {
-    const unsubscribe = subscribeJobProgress((event: JobProgressEvent) => {
-      if (!pushBusy && !pullBusy) return;
-      const percent =
-        typeof event.totalBytes === 'number' &&
-        event.totalBytes > 0 &&
-        typeof event.bytesTransferred === 'number'
-          ? Math.min(100, Math.round((event.bytesTransferred / event.totalBytes) * 100))
-          : undefined;
-      const step: SyncStep = { stepId: event.stepId, percent, detail: event.detail };
-      if (event.status === 'running') {
-        if (pushBusy) setPushStep(step);
-        if (pullBusy) setPullStep(step);
-      } else if (event.status === 'success' || event.status === 'failed') {
-        setPushStep(undefined);
-        setPullStep(undefined);
-      }
-    });
-    return unsubscribe;
-  }, [pushBusy, pullBusy]);
-
-  // Hydrate undo state from ledger on mount so the button survives restarts.
+  // Hydrate undo state from ledger on mount.
   useEffect(() => {
     let cancelled = false;
     ipcClient.listUndo()
@@ -814,51 +588,15 @@ function SftpLinkedState({
     return onPostPushAction(() => setLastPushUndoId(undefined));
   }, []);
 
-  // Prevent Electron from closing while any operation is in flight.
-  useEffect(() => {
-    if (!pushBusy && !pullBusy && !undoBusy) return;
-    const handler = (e: BeforeUnloadEvent) => {
-      e.preventDefault();
-      e.returnValue = 'A sync operation is in progress. Closing now may leave your site in a broken state.';
-    };
-    window.addEventListener('beforeunload', handler);
-    return () => window.removeEventListener('beforeunload', handler);
-  }, [pushBusy, pullBusy, undoBusy]);
-
-  const runPush = async () => {
-    setPushBusy(true);
-    setPushStep(undefined);
-    setLastPushUndoId(undefined);
-    setUndoErr(undefined);
-    setUndoResult(undefined);
-    showSyncModal('push', mapping.appLabel);
-    try {
-      const plan = await ipcClient.planPush({
-        linkMode: 'sftp',
-        localSiteId: site.id,
-        localUrl: site.url || `http://${site.domain}`,
-        webRootPath: site.paths?.webRoot || `${site.path}/app/public`,
-        includes: pushIncludes,
-      });
-      await ipcClient.runJob({ planId: plan.planId });
-      // Push succeeded — show post-push modal with undo/confirm
-      try {
-        const undos = await ipcClient.listUndo();
-        const latest = undos.records.find(
-          (r) => r.localSiteId === site.id && !r.undoneAt && !r.dismissedAt,
-        );
-        if (latest) {
-          setLastPushUndoId(latest.id);
-          showPostPushModal(mapping.appLabel, latest.id);
-        }
-      } catch { /* non-fatal — modal will show generic done */ }
-    } catch (e) {
-      failSyncModal(e instanceof Error ? e.message : String(e));
-    } finally {
-      setPushBusy(false);
-      setPushStep(undefined);
-    }
-  };
+  const wizardCtx = (mode: 'push' | 'pull'): WizardContext => ({
+    mode,
+    appLabel: mapping.appLabel,
+    siteId: site.id,
+    localUrl: site.url || `http://${site.domain}`,
+    webRootPath: site.paths?.webRoot || `${site.path}/app/public`,
+    remoteUrl: mapping.remoteUrl,
+    linkMode: 'sftp',
+  });
 
   const runUndo = async () => {
     if (!lastPushUndoId) return;
@@ -879,7 +617,7 @@ function SftpLinkedState({
     }
   };
 
-  const dismissUndo = async () => {
+  const dismissUndoFn = async () => {
     if (!lastPushUndoId) return;
     setUndoBusy(true);
     setUndoErr(undefined);
@@ -897,44 +635,6 @@ function SftpLinkedState({
       setUndoBusy(false);
     }
   };
-
-  const runPull = async () => {
-    setPullBusy(true);
-    setPullStep(undefined);
-    showSyncModal('pull', mapping.appLabel);
-    try {
-      const plan = await ipcClient.planPull({
-        linkMode: 'sftp',
-        destinationName: mapping.appLabel,
-        localSiteId: site.id,
-        includes: pullIncludes,
-      });
-      await ipcClient.runJob({ planId: plan.planId });
-    } catch (e) {
-      failSyncModal(e instanceof Error ? e.message : String(e));
-    } finally {
-      setPullBusy(false);
-      setPullStep(undefined);
-    }
-  };
-
-  const pushLabel = (() => {
-    if (!pushBusy) return 'Push to Cloudways (SFTP)';
-    if (!pushStep) return 'Pushing…';
-    const label = PUSH_STEP_LABELS[pushStep.stepId] ?? pushStep.stepId;
-    return pushStep.percent != null
-      ? `Pushing — ${label} (${pushStep.percent}%)`
-      : `Pushing — ${label}`;
-  })();
-
-  const pullLabel = (() => {
-    if (!pullBusy) return 'Pull from Cloudways (SFTP)';
-    if (!pullStep) return 'Pulling…';
-    const label = PULL_STEP_LABELS[pullStep.stepId] ?? pullStep.stepId;
-    return pullStep.percent != null
-      ? `Pulling — ${label} (${pullStep.percent}%)`
-      : `Pulling — ${label}`;
-  })();
 
   return (
     <section>
@@ -984,93 +684,30 @@ function SftpLinkedState({
         </div>
       </div>
 
-      {/* Push / Pull tab switcher */}
-      <div style={styles.tabs}>
-        <button
-          type="button"
-          style={mode === 'push' ? styles.tabActive : styles.tab}
-          onClick={() => setMode('push')}
-          disabled={busy}
-        >
-          Push
-        </button>
-        <button
-          type="button"
-          style={mode === 'pull' ? styles.tabActive : styles.tab}
-          onClick={() => setMode('pull')}
-          disabled={busy}
-        >
-          Pull
-        </button>
+      {/* Pull / Push action buttons — open wizard modal */}
+      <div style={styles.actionBar}>
+        <Button onClick={() => openWizard(wizardCtx('pull'))} disabled={undoBusy}>
+          <PullIcon />
+          Pull from Cloudways
+        </Button>
+        <Button onClick={() => openWizard(wizardCtx('push'))} disabled={undoBusy} style={{ marginLeft: 8 }}>
+          <PushIcon />
+          Push to Cloudways
+        </Button>
       </div>
 
-      {mode === 'push' ? (
-        <>
-          {!pushBusy && (
-            <div style={{ ...styles.banner, marginBottom: 16 }}>
-              <Banner variant="neutral">
-                <strong>SFTP mode can&rsquo;t trigger a Cloudways API backup.</strong>{' '}
-                Cloudways Sync still snapshots the remote <code>wp-content</code> + database
-                into <code>private_html/.cwsync-snapshots/</code> before pushing (and mirrors
-                it locally if &lt;500 MB), so <em>Undo last push</em> can roll back. For full
-                safety, take a manual backup from <strong>Cloudways → Application → Backups</strong>{' '}
-                first.
-              </Banner>
-            </div>
-          )}
-          {pushBusy && pushStep?.detail && (
-            <div style={{ marginBottom: 8, fontSize: 11, opacity: 0.65 }}>
-              {pushStep.detail}
-            </div>
-          )}
-          {!pushBusy && (
-            <SelectivePanel heading="Include in push" includes={pushIncludes} onChange={setPushIncludes} />
-          )}
-          {undoErr && <div style={styles.banner}><Banner variant="error">{undoErr}</Banner></div>}
-          {undoResult && <div style={styles.banner}><Banner variant="success">{undoResult}</Banner></div>}
-          <div style={styles.actionBar}>
-            <Button onClick={runPush} disabled={busy}>
-              {pushLabel}
-            </Button>
-            {lastPushUndoId && !pushBusy && (
-              <>
-                <Button onClick={runUndo} disabled={undoBusy} style={{ marginLeft: 8 }}>
-                  {undoBusy ? 'Restoring…' : 'Undo last push'}
-                </Button>
-                <Button onClick={dismissUndo} disabled={undoBusy} style={{ marginLeft: 8 }}>
-                  Confirm push
-                </Button>
-              </>
-            )}
-          </div>
-        </>
-      ) : (
-        <>
-          {!pullBusy && (
-            <div style={{ ...styles.banner, marginBottom: 16 }}>
-              <Banner variant="neutral">
-                <strong>Pulls overwrite your Local site.</strong> The selected{' '}
-                <code>wp-content</code> subdirs and database will be replaced from the remote.
-                Cloudways stays untouched (pulls are read-only on the server). If you have
-                unsaved local changes, export the site first via{' '}
-                <strong>Local → right-click site → Export…</strong>.
-              </Banner>
-            </div>
-          )}
-          {pullBusy && pullStep?.detail && (
-            <div style={{ marginBottom: 8, fontSize: 11, opacity: 0.65 }}>
-              {pullStep.detail}
-            </div>
-          )}
-          {!pullBusy && (
-            <SelectivePanel heading="Include in pull" includes={pullIncludes} onChange={setPullIncludes} />
-          )}
-          <div style={styles.actionBar}>
-            <Button onClick={runPull} disabled={busy}>
-              {pullLabel}
-            </Button>
-          </div>
-        </>
+      {/* Undo fallback — safety net if user closes post-push modal */}
+      {undoErr && <div style={styles.banner}><Banner variant="error">{undoErr}</Banner></div>}
+      {undoResult && <div style={styles.banner}><Banner variant="success">{undoResult}</Banner></div>}
+      {lastPushUndoId && (
+        <div style={{ ...styles.actionBar, marginTop: 12 }}>
+          <Button onClick={runUndo} disabled={undoBusy} style={{ marginRight: 8 }}>
+            {undoBusy ? 'Restoring…' : 'Undo last push'}
+          </Button>
+          <Button onClick={dismissUndoFn} disabled={undoBusy}>
+            Confirm push
+          </Button>
+        </div>
       )}
     </section>
   );
@@ -1458,111 +1095,6 @@ function UnlinkedState({
   );
 }
 
-// --- Selective sync panel (shared by push & pull) ---
-
-type SyncIncludes = PushIncludes | PullIncludes;
-
-const WP_CONTENT_OPTIONS: Array<{ key: keyof SyncIncludes; label: string }> = [
-  { key: 'uploads', label: 'Uploads (media)' },
-  { key: 'plugins', label: 'Plugins' },
-  { key: 'themes', label: 'Themes' },
-  { key: 'muPlugins', label: 'MU-Plugins' },
-  { key: 'languages', label: 'Languages' },
-];
-
-function SelectivePanel({
-  heading,
-  includes,
-  onChange,
-}: {
-  heading: string;
-  includes: SyncIncludes;
-  onChange: (next: SyncIncludes) => void;
-}): React.ReactElement {
-  const toggle = (key: keyof SyncIncludes) => {
-    const next = { ...includes, [key]: !includes[key] };
-    const anySubOn = WP_CONTENT_OPTIONS.some((o) => next[o.key]);
-    next.wpContent = anySubOn;
-    onChange(next);
-  };
-
-  const toggleWpContent = () => {
-    const next = { ...includes };
-    const newVal = !includes.wpContent;
-    next.wpContent = newVal;
-    for (const o of WP_CONTENT_OPTIONS) {
-      next[o.key] = newVal;
-    }
-    onChange(next);
-  };
-
-  return (
-    <div style={selectiveStyles.panel}>
-      <Text style={selectiveStyles.heading}>{heading}</Text>
-      <div style={selectiveStyles.grid}>
-        <label style={selectiveStyles.item}>
-          <Checkbox checked={includes.database} onChange={() => toggle('database')} />
-          <span style={selectiveStyles.label}>Database</span>
-        </label>
-        <label style={selectiveStyles.item}>
-          <Checkbox checked={includes.wpContent} onChange={toggleWpContent} />
-          <span style={selectiveStyles.label}>wp-content (all)</span>
-        </label>
-        {includes.wpContent && (
-          <div style={selectiveStyles.subGroup}>
-            {WP_CONTENT_OPTIONS.map((opt) => (
-              <label key={opt.key} style={selectiveStyles.item}>
-                <Checkbox
-                  checked={includes[opt.key] as boolean}
-                  onChange={() => toggle(opt.key)}
-                />
-                <span style={selectiveStyles.label}>{opt.label}</span>
-              </label>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-const selectiveStyles: Record<string, React.CSSProperties> = {
-  panel: {
-    marginBottom: 16,
-    padding: '12px 16px',
-    background: 'rgba(255,255,255,0.04)',
-    borderRadius: 6,
-  },
-  heading: {
-    fontSize: 12,
-    fontWeight: 600,
-    textTransform: 'uppercase' as const,
-    letterSpacing: 0.5,
-    opacity: 0.6,
-    marginBottom: 8,
-  },
-  grid: {
-    display: 'flex',
-    flexDirection: 'column' as const,
-    gap: 6,
-  },
-  subGroup: {
-    paddingLeft: 24,
-    display: 'flex',
-    flexDirection: 'column' as const,
-    gap: 6,
-  },
-  item: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    cursor: 'pointer',
-    fontSize: 13,
-  },
-  label: {
-    userSelect: 'none' as const,
-  },
-};
 
 const styles: Record<string, React.CSSProperties> = {
   wrap: { padding: 24 },
@@ -1681,29 +1213,5 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     marginTop: 16,
     marginBottom: 8,
-  },
-  breezeNotice: {
-    marginBottom: 12,
-    padding: '12px 14px',
-    background: 'rgba(81,187,123,0.06)',
-    border: '1px solid rgba(81,187,123,0.18)',
-    borderRadius: 6,
-  },
-  breezeHeader: {
-    display: 'flex',
-    alignItems: 'flex-start',
-    gap: 10,
-    cursor: 'pointer',
-  },
-  breezeTitle: {
-    display: 'block',
-    fontSize: 13,
-    fontWeight: 600,
-    marginBottom: 3,
-  },
-  breezeDesc: {
-    display: 'block',
-    opacity: 0.55,
-    lineHeight: 1.4,
   },
 };

@@ -20,6 +20,8 @@ import {
   type CancelJobResponse,
   type DismissUndoRequest,
   type DismissUndoResponse,
+  type GetLocalSiteRequest,
+  type GetLocalSiteResponse,
   type GetMappingByAppRequest,
   type GetMappingByAppResponse,
   type GetMappingRequest,
@@ -655,6 +657,21 @@ export function registerSyncHandlers({
     return runHandler<ListMappingsResponse>(async () => {
       const mappings = await siteMapper.list();
       return { mappings };
+    });
+  });
+
+  addIpcAsyncListener(CHANNELS.GET_LOCAL_SITE, (...args: unknown[]) => {
+    const payload = args[0] as GetLocalSiteRequest | undefined;
+    return runHandler<GetLocalSiteResponse>(async () => {
+      const id = payload?.localSiteId?.trim();
+      if (!id) return { site: null };
+      const site = services.siteData.getSite(id);
+      if (!site) return { site: null };
+      const url = (site as { url?: string }).url
+        || `http://${(site as { domain?: string }).domain ?? ''}`;
+      const webRootPath = (site as { paths?: { webRoot?: string } }).paths?.webRoot
+        || `${(site as { path?: string }).path ?? ''}/app/public`;
+      return { site: { id: site.id, url, webRootPath } };
     });
   });
 

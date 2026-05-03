@@ -39,17 +39,23 @@ export function GlobalDashboard(): React.ReactElement {
     };
   }, []);
 
+  // Title + caption follow Local's PageTitleBar style on every screen.
+  // When connected, the identity (email + Disconnect) sits on the right
+  // of the same row so we don't burn ~80px on a separate banner.
   return (
     <div style={styles.pane}>
-      {/* Mirrors Local's own PageTitleBar pattern on Blueprints/Add-ons:
-          XL title, short caption directly below, then a 2px Divider. */}
       <header style={styles.header}>
-        <Title size="xl" tag="h1" style={styles.headerTitle}>
-          Cloudways Sync
-        </Title>
-        <Text size="caption" style={styles.headerSub}>
-          One-click sync between Cloudways apps and your Local sites.
-        </Text>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <Title size="xl" tag="h1" style={styles.headerTitle}>
+            Cloudways Sync
+          </Title>
+          <Text size="caption" style={styles.headerSub}>
+            One-click sync between Cloudways apps and your Local sites.
+          </Text>
+        </div>
+        {status?.connected && (
+          <ConnectionPill status={status} onChange={setStatus} />
+        )}
       </header>
       <Divider />
 
@@ -70,9 +76,9 @@ export function GlobalDashboard(): React.ReactElement {
   );
 }
 
-// --- Connected ---
-
-function ConnectedView({
+// Compact identity chip used in the connected-state title bar: green
+// dot + masked email + Disconnect link. Replaces the full-width banner.
+function ConnectionPill({
   status,
   onChange,
 }: {
@@ -80,46 +86,47 @@ function ConnectedView({
   onChange: (s: ConnectionStatusPayload) => void;
 }): React.ReactElement {
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | undefined>();
-
   const disconnect = async () => {
     setBusy(true);
-    setErr(undefined);
     try {
       await ipcClient.disconnect();
       onChange({ connected: false });
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
   };
+  return (
+    <div style={styles.connPill}>
+      <span style={styles.connDot} aria-hidden />
+      <Text size="caption" style={{ color: 'rgba(255,255,255,0.85)' }}>
+        Connected as <MaskedEmail email={status.email} bold />
+      </Text>
+      <span style={styles.connDivider} aria-hidden />
+      <button
+        type="button"
+        onClick={disconnect}
+        disabled={busy}
+        style={styles.connDisconnect}
+      >
+        {busy ? 'Disconnecting…' : 'Disconnect'}
+      </button>
+    </div>
+  );
+}
 
+// --- Connected ---
+
+function ConnectedView({
+  status: _status,
+  onChange: _onChange,
+}: {
+  status: Extract<ConnectionStatusPayload, { connected: true }>;
+  onChange: (s: ConnectionStatusPayload) => void;
+}): React.ReactElement {
+  // Identity + Disconnect now live in the page title bar (ConnectionPill);
+  // this view just renders the fleet browser at full height.
   return (
     <div style={styles.connectedPane}>
-      <style>{BANNER_COMPACT_CSS}</style>
-      <Banner variant="success" className="cws-connected-banner">
-        <div style={styles.bannerBody}>
-          <span>
-            Connected as <MaskedEmail email={status.email} bold />
-          </span>
-          <button
-            type="button"
-            className="cws-danger-btn"
-            onClick={disconnect}
-            disabled={busy}
-          >
-            {busy ? 'Disconnecting…' : 'Disconnect'}
-          </button>
-        </div>
-      </Banner>
-
-      {err && (
-        <div style={styles.row}>
-          <Banner variant="error">{err}</Banner>
-        </div>
-      )}
-
       <FleetBrowser />
     </div>
   );
@@ -263,83 +270,6 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-// Scoped overrides for the "Connected as …" banner. Attribute-substring
-// selectors match Banner's CSS-module hashed class names (`Content_*`,
-// `Icon_Wrapper_*`) so we don't have to import a brittle class name.
-// Compact banner + custom danger pill button.
-//
-// Replicates Local's ButtonBase exactly (extracted from scoped.css):
-//   - ::after pseudo for the 2px border (not `border` on the element)
-//   - border-radius 500px (pill), padding 10px 20px
-//   - font-size 1.4rem, font-weight 700, letter-spacing .005em
-//   - transition on transform/bg/color 0.1s
-//   - Outline variant: transparent bg, border+text colored, hover fills
-//     bg and hides border (transparent), text turns white
-//   - Red color tokens: #ef4e65 (dark), hover fill #ba3e51, active #8c2738
-const BANNER_COMPACT_CSS = `
-  .cws-connected-banner [class*="Icon_Wrapper_"] { padding: 10px 14px; }
-  .cws-connected-banner [class*="Content_"] { padding: 8px 14px; flex: 1; }
-  .cws-connected-banner [class*="Left_Wrapper_"] { flex: 1; }
-  .cws-connected-banner [class*="Content_"] button { text-decoration: none !important; }
-
-  .cws-danger-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    position: relative;
-    background: transparent;
-    border: none;
-    border-radius: 500px;
-    padding: 10px 20px;
-    font-family: inherit;
-    font-size: 1.4rem;
-    font-weight: 700;
-    letter-spacing: .005em;
-    text-transform: none;
-    text-decoration: none;
-    color: #ef4e65;
-    cursor: pointer;
-    flex-shrink: 0;
-    white-space: nowrap;
-    transition: transform .1s ease 0s, background .1s ease 0s, color .1s ease 0s;
-  }
-  .cws-danger-btn::after {
-    content: "";
-    position: absolute;
-    top: 0; right: 0; bottom: 0; left: 0;
-    border: 2px solid #ef4e65;
-    border-radius: 500px;
-    transition: border .1s ease 0s;
-  }
-  .cws-danger-btn:hover {
-    background: #ef4e65;
-    color: #fff;
-  }
-  .cws-danger-btn:hover::after {
-    border-color: transparent;
-  }
-  .cws-danger-btn:active {
-    background: #ba3e51;
-    color: #fff;
-  }
-  .cws-danger-btn:active::after {
-    border-color: transparent;
-  }
-  .cws-danger-btn:disabled {
-    opacity: 0.45;
-    cursor: not-allowed;
-    background: transparent;
-    color: #ef4e65;
-  }
-  .cws-danger-btn:disabled::after {
-    border-color: #9f9c9c;
-  }
-  .cws-danger-btn:disabled:hover {
-    background: transparent;
-    color: #ef4e65;
-  }
-`;
-
 const styles: Record<string, React.CSSProperties> = {
   pane: {
     display: 'flex',
@@ -348,8 +278,47 @@ const styles: Record<string, React.CSSProperties> = {
   },
   header: {
     // Matches Local's PageTitleBar horizontal rhythm (30px) and gives
-    // the XL title some breathing room before the divider.
+    // the XL title some breathing room before the divider. Flex row so
+    // the connection identity (when present) can sit on the right.
+    display: 'flex',
+    alignItems: 'flex-end',
+    gap: 16,
     padding: '24px 30px 18px',
+  },
+  // Plain inline identity row — small green dot, masked email, vertical
+  // hairline, Disconnect link. No tinted pill, no green border; matches
+  // the understated metadata strip Local uses elsewhere.
+  connPill: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 10,
+    flexShrink: 0,
+    background: '#262727',
+    borderRadius: 6,
+    padding: '8px 14px',
+    marginBottom: 2,
+  },
+  connDot: {
+    width: 7,
+    height: 7,
+    borderRadius: '50%',
+    background: '#51bb7b',
+    flexShrink: 0,
+  },
+  connDivider: {
+    width: 1,
+    height: 12,
+    background: 'rgba(255,255,255,0.18)',
+  },
+  connDisconnect: {
+    background: 'transparent',
+    border: 'none',
+    padding: 0,
+    color: '#ef4e65',
+    fontSize: 12,
+    fontWeight: 600,
+    fontFamily: 'inherit',
+    cursor: 'pointer',
   },
   headerTitle: {
     margin: 0,
@@ -363,7 +332,7 @@ const styles: Record<string, React.CSSProperties> = {
     flex: 1,
     minHeight: 0,
     overflow: 'hidden',
-    padding: '24px 30px',
+    padding: '16px 30px 24px',
   },
   connectedPane: {
     display: 'flex',
@@ -371,23 +340,6 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 18,
     height: '100%',
     minHeight: 0,
-  },
-  bannerBody: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 16,
-    width: '100%',
-  },
-  row: {
-    marginTop: 16,
-  },
-  metaGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'max-content 1fr',
-    columnGap: 24,
-    rowGap: 8,
-    marginTop: 12,
   },
   form: {
     marginTop: 8,
