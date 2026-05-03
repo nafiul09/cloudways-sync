@@ -62,61 +62,80 @@ export function injectNavItem(opts: InjectNavItemOptions): SidebarInjectionHandl
   let observer: MutationObserver | null = null;
   let sidebarClickListener: ((e: Event) => void) | null = null;
   let attachedSidebar: HTMLElement | null = null;
+  let disposed = false;
 
-  const tryInject = (): boolean => {
-    if (handle) return true;
-    handle = doInject(opts);
-    if (!handle) return false;
+  function attachSidebarClickListener() {
+    // Clean up any previous listener
+    if (sidebarClickListener && attachedSidebar) {
+      attachedSidebar.removeEventListener('click', sidebarClickListener, true);
+    }
+    sidebarClickListener = null;
+    attachedSidebar = null;
+
+    const sidebar = document.getElementById('Sidebar');
+    if (!sidebar) return;
 
     // Click delegation on #Sidebar: any click on a non-Cloudways-Sync
     // sidebar link should deactivate our icon. We can't rely on
     // hashchange because re-clicking the *same* Local route doesn't
     // emit one — yet the user expects the visible active state to
     // jump back to that item.
-    const sidebar = document.getElementById('Sidebar');
-    if (sidebar) {
-      sidebarClickListener = (e: Event) => {
-        const target = e.target as HTMLElement | null;
-        const link = target?.closest('a');
-        if (!link) return;
-        // Ignore clicks on our own item — its dedicated handler does
-        // the show/hide toggle.
-        if (link.closest(`[${MARKER_ATTR}]`)) return;
-        // The user clicked a real Local nav item. Deactivate ours,
-        // notify the caller (so it can hide the overlay), and
-        // visually restore the clicked item as active.
-        handle?.setActive(false);
-        opts.onDeactivate?.();
-        // Repaint Local's __Active class on the clicked link in case
-        // hashchange won't fire (re-click of same route).
-        sidebar.querySelectorAll('a.__Active').forEach((el) => {
-          if (el !== link) {
-            el.classList.remove('__Active');
-            el.removeAttribute('aria-current');
-          }
-        });
-        link.classList.add('__Active');
-        link.setAttribute('aria-current', 'page');
-      };
-      sidebar.addEventListener('click', sidebarClickListener, true);
-      attachedSidebar = sidebar;
-    }
+    sidebarClickListener = (e: Event) => {
+      const target = e.target as HTMLElement | null;
+      const link = target?.closest('a');
+      if (!link) return;
+      // Ignore clicks on our own item — its dedicated handler does
+      // the show/hide toggle.
+      if (link.closest(`[${MARKER_ATTR}]`)) return;
+      // The user clicked a real Local nav item. Deactivate ours,
+      // notify the caller (so it can hide the overlay), and
+      // visually restore the clicked item as active.
+      handle?.setActive(false);
+      opts.onDeactivate?.();
+      // Repaint Local's __Active class on the clicked link in case
+      // hashchange won't fire (re-click of same route).
+      sidebar.querySelectorAll('a.__Active').forEach((el) => {
+        if (el !== link) {
+          el.classList.remove('__Active');
+          el.removeAttribute('aria-current');
+        }
+      });
+      link.classList.add('__Active');
+      link.setAttribute('aria-current', 'page');
+    };
+    sidebar.addEventListener('click', sidebarClickListener, true);
+    attachedSidebar = sidebar;
+  }
 
+  const tryInject = (): boolean => {
+    // If our previously-injected element was removed from the DOM
+    // (Local rebuilt the sidebar), reset so we can re-inject.
+    if (handle && !document.body.contains(handle.element)) {
+      handle = null;
+    }
+    if (handle) return true;
+
+    handle = doInject(opts);
+    if (!handle) return false;
+
+    attachSidebarClickListener();
     return true;
   };
 
-  if (!tryInject()) {
-    observer = new MutationObserver(() => {
-      if (tryInject() && observer) {
-        observer.disconnect();
-        observer = null;
-      }
-    });
-    observer.observe(document.body ?? document.documentElement, {
-      childList: true,
-      subtree: true,
-    });
-  }
+  // Use a persistent observer — Local can rebuild the sidebar at any
+  // time (navigating to Preferences, creating a site, etc.), so we
+  // need to keep watching and re-inject when our element disappears.
+  observer = new MutationObserver(() => {
+    if (disposed) return;
+    tryInject();
+  });
+  observer.observe(document.body ?? document.documentElement, {
+    childList: true,
+    subtree: true,
+  });
+
+  // Initial attempt
+  tryInject();
 
   return {
     get element(): HTMLElement {
@@ -126,6 +145,7 @@ export function injectNavItem(opts: InjectNavItemOptions): SidebarInjectionHandl
       handle?.setActive(active);
     },
     dispose() {
+      disposed = true;
       observer?.disconnect();
       observer = null;
       if (sidebarClickListener && attachedSidebar) {

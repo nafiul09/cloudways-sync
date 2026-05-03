@@ -65,25 +65,33 @@ export function startSiteListIcons(): void {
   refreshSiteListIcons();
 
   // Watch for DOM changes in the site list (accordion, drag, new sites).
-  const observer = new MutationObserver(() => {
-    injectBadges();
-  });
+  // Local may rebuild #SiteList entirely (e.g. after creating a site or
+  // navigating away and back), so we use a persistent body observer that
+  // re-attaches a targeted SiteList observer whenever the element changes.
+  let siteListObserver: MutationObserver | null = null;
+  let observedList: HTMLElement | null = null;
 
-  const tryObserve = () => {
+  function ensureObserving() {
     const siteList = document.getElementById('SiteList');
-    if (siteList) {
-      observer.observe(siteList, { childList: true, subtree: true });
+    if (siteList && siteList !== observedList) {
+      // #SiteList was rebuilt — re-attach
+      siteListObserver?.disconnect();
+      siteListObserver = new MutationObserver(() => injectBadges());
+      siteListObserver.observe(siteList, { childList: true, subtree: true });
+      observedList = siteList;
       injectBadges();
-      return true;
+    } else if (!siteList && observedList) {
+      // #SiteList was removed — clean up
+      siteListObserver?.disconnect();
+      siteListObserver = null;
+      observedList = null;
     }
-    return false;
-  };
-
-  if (!tryObserve()) {
-    // Site list might not be in DOM yet — wait for it.
-    const boot = new MutationObserver(() => {
-      if (tryObserve()) boot.disconnect();
-    });
-    boot.observe(document.body, { childList: true, subtree: true });
   }
+
+  // Persistent observer on body to detect #SiteList appearance/rebuild
+  const bodyObserver = new MutationObserver(() => {
+    ensureObserving();
+  });
+  bodyObserver.observe(document.body, { childList: true, subtree: true });
+  ensureObserving();
 }

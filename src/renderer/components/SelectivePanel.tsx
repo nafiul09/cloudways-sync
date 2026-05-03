@@ -75,7 +75,7 @@ const selectiveStyles: Record<string, React.CSSProperties> = {
   panel: {
     marginBottom: 16,
     padding: '12px 16px',
-    background: 'rgba(255,255,255,0.04)',
+    background: 'var(--cws-progress-track)',
     borderRadius: 6,
   },
   heading: {

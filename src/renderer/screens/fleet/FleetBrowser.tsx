@@ -2,8 +2,8 @@
 //
 // Left rail mirrors Local's own SiteList sidebar (extracted from
 // app.css): collapsible server groups with 40px headers, 36px app
-// rows, 4px border-radius, exact dark-theme colors (#303031 base,
-// #262727 selected, #434344 hover), 8x8 circle dot indicator.
+// rows, 4px border-radius, theme-aware via --cws-* CSS custom
+// properties, 8x8 circle dot indicator.
 //
 // Right pane shows selected app detail with flat TableList rows.
 
@@ -59,7 +59,7 @@ const RAIL_CSS = `
     text-align: left;
     transition: background 100ms;
   }
-  .cws-server-header:hover { background: #434344; }
+  .cws-server-header:hover { background: var(--cws-hover-bg); }
   .cws-server-header-name {
     overflow: hidden;
     text-overflow: ellipsis;
@@ -85,7 +85,7 @@ const RAIL_CSS = `
     line-height: 36px;
     text-decoration: none;
     padding: 0 5px;
-    color: #c7c4c4;
+    color: var(--cws-text-secondary);
     background: transparent;
     border-radius: 4px;
     overflow: hidden;
@@ -99,11 +99,11 @@ const RAIL_CSS = `
     position: relative;
   }
   .cws-app-item:not(.cws-app-item--active):hover {
-    background: #434344;
+    background: var(--cws-hover-bg);
   }
   .cws-app-item--active {
-    background: #303031;
-    color: #fff;
+    background: var(--cws-active-bg);
+    color: var(--cws-text-primary);
     font-weight: 700;
   }
   .cws-app-item--adjacent-active {
@@ -123,9 +123,9 @@ const RAIL_CSS = `
     flex-shrink: 0;
   }
   .cws-app-dot svg { width: 10px; }
-  .cws-app-dot svg circle { fill: #434344; }
-  .cws-app-item:not(.cws-app-item--active):hover .cws-app-dot svg circle { fill: #51bb7b; }
-  .cws-app-item--active .cws-app-dot svg circle { fill: #51bb7b; }
+  .cws-app-dot svg circle { fill: var(--cws-divider); }
+  .cws-app-item:not(.cws-app-item--active):hover .cws-app-dot svg circle { fill: var(--cws-accent); }
+  .cws-app-item--active .cws-app-dot svg circle { fill: var(--cws-accent); }
 
   .cws-app-name {
     flex-grow: 1;
@@ -150,13 +150,13 @@ const RAIL_CSS = `
     line-height: 1;
     padding: 2px 5px;
     border-radius: 3px;
-    background: rgba(255, 255, 255, 0.08);
-    color: #9f9c9c;
+    background: var(--cws-border-subtle);
+    color: var(--cws-text-tertiary);
     opacity: 0.7;
   }
   .cws-app-item--active .cws-app-badge {
-    background: rgba(255, 255, 255, 0.12);
-    color: #c7c4c4;
+    background: var(--cws-border-default);
+    color: var(--cws-text-secondary);
     opacity: 1;
   }
 `;
@@ -693,7 +693,7 @@ const styles: Record<string, React.CSSProperties> = {
     minHeight: 0,
   },
   rail: {
-    background: '#262727',
+    background: 'var(--cws-bg-surface)',
     padding: '6px 10px',
     overflowY: 'auto',
   },
@@ -737,7 +737,7 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 16,
   },
   smokeBox: {
-    background: '#262727',
+    background: 'var(--cws-bg-surface)',
     borderRadius: 6,
     padding: '4px 16px 4px',
     marginBottom: 16,
@@ -751,7 +751,7 @@ const styles: Record<string, React.CSSProperties> = {
   smokeClose: {
     background: 'transparent',
     border: 'none',
-    color: 'rgba(255,255,255,0.5)',
+    color: 'var(--cws-text-tertiary)',
     fontSize: 18,
     cursor: 'pointer',
     padding: '0 2px',
@@ -780,8 +780,8 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 16,
     marginBottom: 16,
     padding: '14px 16px',
-    background: 'rgba(255,255,255,0.04)',
-    border: '1px solid rgba(255,255,255,0.08)',
+    background: 'var(--cws-progress-track)',
+    border: '1px solid var(--cws-border-subtle)',
     borderRadius: 6,
   },
   credentialsTitle: {
@@ -799,7 +799,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   copyBtn: {
     marginLeft: 12,
-    border: '1px solid rgba(255, 255, 255, 0.18)',
+    border: '1px solid var(--cws-border-default)',
     background: 'transparent',
     color: 'inherit',
     padding: '2px 10px',

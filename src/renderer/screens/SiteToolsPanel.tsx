@@ -62,8 +62,8 @@ const CWS_CSS = `
     display: inline-block;
     width: 14px;
     height: 14px;
-    border: 2px solid rgba(255,255,255,0.15);
-    border-top-color: rgba(255,255,255,0.6);
+    border: 2px solid var(--cws-spinner-track);
+    border-top-color: var(--cws-spinner-arc);
     border-radius: 50%;
     animation: cws-spin 0.7s linear infinite;
     flex-shrink: 0;
@@ -79,9 +79,9 @@ const LOCAL_FLY_SELECT_CSS = `
     max-width: 100%;
     padding: 0 35px 0 10px;
     position: relative;
-    color: #d9d9d9;
-    background: #252626;
-    border: 1px solid rgba(255, 255, 255, 0.18);
+    color: var(--cws-text-default);
+    background: var(--cws-bg-inset);
+    border: 1px solid var(--cws-border-default);
     border-radius: 4px;
     cursor: pointer;
     font-size: 12px;
@@ -143,7 +143,7 @@ const LOCAL_FLY_SELECT_CSS = `
   }
 
   .cws-local-select .CurrentValue_Placeholder {
-    color: rgba(217, 217, 217, 0.65);
+    color: var(--cws-text-tertiary);
   }
 
   .cws-local-select .FlySelect__Right {
@@ -156,10 +156,10 @@ const LOCAL_FLY_SELECT_CSS = `
     display: none;
     width: auto;
     position: fixed;
-    background: #2b2c2c;
-    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: var(--cws-bg-inset);
+    border: 1px solid var(--cws-border-default);
     border-radius: 4px;
-    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+    box-shadow: 0 10px 28px var(--cws-shadow);
     overflow: hidden;
   }
 
@@ -176,13 +176,13 @@ const LOCAL_FLY_SELECT_CSS = `
     box-sizing: border-box;
     min-width: 100%;
     padding: 0 10px;
-    color: #d9d9d9;
+    color: var(--cws-text-default);
   }
 
   .cws-local-select .FlySelect_Option:hover,
   .cws-local-select .FlySelect_Option:focus {
     color: #fff;
-    background: #2f8f55;
+    background: var(--cws-accent-hover);
     outline: none;
   }
 
@@ -484,7 +484,7 @@ function LinkedState({
                 href={mapping.remoteUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                style={{ ...styles.linkedValue, color: '#51bb7b', textDecoration: 'none' }}
+                style={{ ...styles.linkedValue, color: 'var(--cws-accent)', textDecoration: 'none' }}
                 onClick={(e) => {
                   e.preventDefault();
                   try {
@@ -658,7 +658,7 @@ function SftpLinkedState({
                 href={mapping.remoteUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                style={{ ...styles.linkedValue, color: '#51bb7b', textDecoration: 'none' }}
+                style={{ ...styles.linkedValue, color: 'var(--cws-accent)', textDecoration: 'none' }}
                 onClick={(e) => {
                   e.preventDefault();
                   const url = mapping.remoteUrl!;
@@ -739,7 +739,7 @@ function ApiLinkedDisconnected({ mapping }: { mapping: ApiSiteMapping }): React.
           {mapping.remoteUrl && (
             <>
               <Text size="caption" style={styles.linkedLabel}>URL</Text>
-              <Text style={{ ...styles.linkedValue, color: '#51bb7b' }}>{mapping.remoteUrl}</Text>
+              <Text style={{ ...styles.linkedValue, color: 'var(--cws-accent)' }}>{mapping.remoteUrl}</Text>
             </>
           )}
         </div>
@@ -998,7 +998,7 @@ function UnlinkedState({
                 {(appDetail?.cname || selectedApp.cname || appDetail?.appFqdn || selectedApp.appFqdn) && (
                   <>
                     <Text size="caption" style={styles.linkedLabel}>URL</Text>
-                    <Text style={{ ...styles.linkedValue, color: '#51bb7b' }}>
+                    <Text style={{ ...styles.linkedValue, color: 'var(--cws-accent)' }}>
                       https://{appDetail?.cname || selectedApp.cname || appDetail?.appFqdn || selectedApp.appFqdn}
                     </Text>
                   </>
@@ -1030,7 +1030,7 @@ function UnlinkedState({
                     <Text size="caption" style={styles.linkedLabel}>Shell</Text>
                     <Text style={{
                       ...styles.linkedValue,
-                      color: smokeResult ? '#51bb7b' : 'rgba(255,255,255,0.4)',
+                      color: smokeResult ? 'var(--cws-accent)' : 'var(--cws-text-tertiary)',
                     }}>
                       {smokeResult ? 'Verified' : 'Run test to verify'}
                     </Text>
@@ -1114,7 +1114,7 @@ const styles: Record<string, React.CSSProperties> = {
     marginTop: 16,
     marginBottom: 16,
     padding: '12px 16px',
-    background: 'rgba(255,255,255,0.04)',
+    background: 'var(--cws-progress-track)',
     borderRadius: 6,
   },
   linkedHeader: {
@@ -1133,7 +1133,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   unlinkBtn: {
     fontSize: 11,
-    color: '#d94f4f',
+    color: 'var(--cws-red)',
   },
   loadingRow: {
     display: 'flex',
@@ -1165,8 +1165,8 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 12,
     marginTop: 8,
     padding: '12px 14px',
-    background: 'rgba(255,255,255,0.04)',
-    border: '1px solid rgba(255,255,255,0.08)',
+    background: 'var(--cws-progress-track)',
+    border: '1px solid var(--cws-border-subtle)',
     borderRadius: 6,
   },
   credentialsTitle: {
@@ -1186,14 +1186,14 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     gap: 0,
     marginBottom: 16,
-    borderBottom: '1px solid rgba(255,255,255,0.1)',
+    borderBottom: '1px solid var(--cws-border-subtle)',
   },
   tab: {
     padding: '8px 16px',
     background: 'transparent',
     border: 'none',
     borderBottom: '2px solid transparent',
-    color: 'rgba(255,255,255,0.5)',
+    color: 'var(--cws-text-tertiary)',
     cursor: 'pointer',
     fontSize: 13,
     fontWeight: 500,
@@ -1202,8 +1202,8 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '8px 16px',
     background: 'transparent',
     border: 'none',
-    borderBottom: '2px solid #51bb7b',
-    color: '#fff',
+    borderBottom: '2px solid var(--cws-accent)',
+    color: 'var(--cws-text-primary)',
     cursor: 'pointer',
     fontSize: 13,
     fontWeight: 600,
