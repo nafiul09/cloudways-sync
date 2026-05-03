@@ -17,6 +17,8 @@ import { registerRemoteHandlers } from './ipc/remoteHandlers';
 import { registerSyncHandlers } from './ipc/syncHandlers';
 import { PING_CHANNEL, type PingRequest, type PingResponse } from '../shared/ipcTypes';
 import { sweepLocalSnapshots, sweepStaleJobs } from './sync/cleanup';
+import { bootstrapUpdater } from './updater/UpdateService';
+import { registerUpdateHandlers } from './ipc/updateHandlers';
 
 export default function register(context: AddonMainContext): void {
   const { ipcMain } = context.electron;
@@ -60,11 +62,23 @@ export default function register(context: AddonMainContext): void {
     sftpCreds,
   });
 
+  // Auto-update: check GitHub releases on startup, offer in-place upgrade.
+  const addonDir = path.resolve(__dirname, '../..');
+  const currentVersion: string = (() => {
+    try {
+      return require(path.join(addonDir, 'package.json')).version;
+    } catch {
+      return '0.0.0';
+    }
+  })();
+  const updater = bootstrapUpdater({ addonDir, userDataDir, currentVersion, sendIPCEvent });
+  registerUpdateHandlers({ addIpcAsyncListener, updater });
+
   // Legacy Phase 0 ping — kept as a cheap smoke channel.
   ipcMain.on(PING_CHANNEL, (event: IpcMainEvent, payload: PingRequest) => {
     const response: PingResponse = {
       echoed: payload?.message ?? '',
-      addonVersion: '0.1.0',
+      addonVersion: currentVersion,
     };
     event.sender.send(`${PING_CHANNEL}:reply`, response);
   });

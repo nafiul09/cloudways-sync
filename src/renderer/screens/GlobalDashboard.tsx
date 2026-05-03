@@ -14,6 +14,7 @@ import { ipcClient, IpcCallError } from '../ipcClient';
 import { MaskedEmail } from '../components/MaskedEmail';
 import type { ConnectionStatusPayload } from '../../shared/ipcTypes';
 import { FleetBrowser } from './fleet/FleetBrowser';
+import { UpdateBanner } from '../updater/UpdateBanner';
 
 // Full-page Cloudways Sync dashboard, mounted in the overlay portal
 // when the user clicks the sidebar icon. Layout mirrors Local's own
@@ -44,6 +45,7 @@ export function GlobalDashboard(): React.ReactElement {
   // of the same row so we don't burn ~80px on a separate banner.
   return (
     <div style={styles.pane}>
+      <UpdateBanner />
       <header style={styles.header}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <Title size="xl" tag="h1" style={styles.headerTitle}>

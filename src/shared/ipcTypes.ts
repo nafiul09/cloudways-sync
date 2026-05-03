@@ -48,6 +48,13 @@ export const CHANNELS = {
 
   // Breeze plugin detection
   DETECT_BREEZE: 'cs:detectBreeze',
+
+  // Auto-update
+  CHECK_UPDATE: 'cs:checkUpdate',
+  INSTALL_UPDATE: 'cs:installUpdate',
+  UPDATE_AVAILABLE: 'cs:updateAvailable',
+  UPDATE_PROGRESS: 'cs:updateProgress',
+  UPDATE_INSTALLED: 'cs:updateInstalled',
 } as const;
 
 export type ChannelName = (typeof CHANNELS)[keyof typeof CHANNELS];
@@ -496,3 +503,20 @@ export type LinkViaSftpRequest = {
 };
 
 export type LinkViaSftpResponse = { mapping: SftpSiteMapping };
+
+// --- Auto-update ---
+
+export type CheckUpdateRequest = Record<string, never>;
+export type CheckUpdateResponse = {
+  available: boolean;
+  version?: string;
+  htmlUrl?: string;
+  tgzUrl?: string;
+};
+
+export type InstallUpdateRequest = { tgzUrl: string; version: string };
+export type InstallUpdateResponse = { installed: boolean };
+
+export type UpdateAvailableEvent = { version: string; htmlUrl?: string; tgzUrl?: string };
+export type UpdateProgressEvent = { bytesTransferred: number; totalBytes: number; phase: 'download' | 'extract' };
+export type UpdateInstalledEvent = { version: string };
