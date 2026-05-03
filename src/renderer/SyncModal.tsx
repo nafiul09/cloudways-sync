@@ -1,19 +1,18 @@
-// Global sync progress modal. Rendered as a portal so it persists
-// regardless of Local's page navigation. Blocks all UI interaction
-// while a push/pull is running, showing real-time step progress.
-//
-// On success, the modal auto-dismisses — the SiteToolsPanel's success
-// Banner surfaces the completion message ("Pull completed — site
-// updated from Cloudways"). On failure, the modal stays open with a
-// dismissible error block so the user always sees what went wrong.
+// Global sync wizard modal. Rendered as a portal so it persists
+// regardless of Local's page navigation. Provides a safety-first
+// wizard flow: setup (warnings) → config (checkboxes) → running
+// (progress) → done/post-push. Blocks all UI interaction while
+// a push/pull is running.
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import ReactDOM from 'react-dom';
-import { Banner } from './components/ui';
+import { Banner, Button, Checkbox, Text, Title } from './components/ui';
+import { SelectivePanel } from './components/SelectivePanel';
+import type { SyncIncludes } from './components/SelectivePanel';
 import { ipcClient, subscribeJobDone, subscribeJobProgress } from './ipcClient';
-import type { JobDoneEvent, JobProgressEvent } from '../shared/ipcTypes';
+import type { JobDoneEvent, JobProgressEvent, PushIncludes, PullIncludes } from '../shared/ipcTypes';
 
-// ---- Step labels (shared with SiteToolsPanel) ----
+// ---- Step labels ----
 
 const PUSH_STEP_LABELS: Record<string, string> = {
   validate: 'Validating',
@@ -45,9 +44,36 @@ const PULL_STEP_LABELS: Record<string, string> = {
   manifest: 'Writing manifest',
 };
 
-// ---- Global state ----
+// ---- Default includes ----
 
-type SyncMode = 'push' | 'pull' | 'undo' | 'confirm';
+const DEFAULT_INCLUDES: PushIncludes = {
+  database: true,
+  wpContent: true,
+  uploads: true,
+  plugins: true,
+  themes: true,
+  muPlugins: true,
+  languages: true,
+};
+
+// ---- Types ----
+
+export type WizardContext = {
+  mode: 'push' | 'pull';
+  appLabel: string;
+  siteId: string;
+  localUrl: string;
+  webRootPath: string;
+  remoteUrl?: string;
+  linkMode: 'api' | 'sftp';
+  serverId?: number;
+  appId?: number;
+  breezeActive?: boolean;
+  /** Fleet pull: create a new Local site (no existing siteId). */
+  isFleetPull?: boolean;
+};
+
+type SyncMode = 'push' | 'pull' | 'fleet-pull' | 'undo' | 'confirm';
 
 type RunningState = {
   phase: 'running';
@@ -62,10 +88,57 @@ type RunningState = {
 
 type ModalState =
   | { phase: 'idle' }
+  | { phase: 'setup'; ctx: WizardContext }
+  | { phase: 'config'; ctx: WizardContext }
   | RunningState
   | { phase: 'done'; mode: SyncMode; appLabel: string }
   | { phase: 'post-push'; appLabel: string; undoRecordId: string }
   | { phase: 'error'; mode: SyncMode; appLabel: string; error: string };
+
+// ---- Stepper config ----
+// Each wizard mode has a fixed sequence of steps the user moves through.
+// Push has a Review step (post-push undo/confirm); pull just resolves to Done.
+type WizardMode = 'push' | 'pull' | 'fleet-pull';
+const WIZARD_STEPS: Record<WizardMode, string[]> = {
+  push: ['Confirm', 'Configure', 'Pushing', 'Review'],
+  pull: ['Confirm', 'Configure', 'Pulling', 'Done'],
+  'fleet-pull': ['Confirm', 'Configure', 'Pulling', 'Done'],
+};
+
+function getWizardMode(state: ModalState): WizardMode | null {
+  if (state.phase === 'setup' || state.phase === 'config') {
+    return state.ctx.isFleetPull ? 'fleet-pull' : state.ctx.mode;
+  }
+  if (state.phase === 'post-push') return 'push';
+  if (state.phase === 'running' || state.phase === 'done' || state.phase === 'error') {
+    if (state.mode === 'fleet-pull') return 'fleet-pull';
+    if (state.mode === 'push' || state.mode === 'pull') return state.mode;
+    // confirm/undo only happen as part of a push wizard's Review step
+    if (state.mode === 'confirm' || state.mode === 'undo') return 'push';
+  }
+  return null;
+}
+
+function getStepIndex(state: ModalState): number {
+  if (state.phase === 'setup') return 0;
+  if (state.phase === 'config') return 1;
+  if (state.phase === 'running') {
+    if (state.mode === 'confirm' || state.mode === 'undo') return 3;
+    return 2;
+  }
+  if (state.phase === 'error') {
+    if (state.mode === 'confirm' || state.mode === 'undo') return 3;
+    return 2;
+  }
+  if (state.phase === 'post-push') return 3;
+  if (state.phase === 'done') {
+    if (state.mode === 'confirm' || state.mode === 'undo') return 4;
+    return 3;
+  }
+  return 0;
+}
+
+// ---- Global state ----
 
 let globalState: ModalState = { phase: 'idle' };
 let listeners: Array<(s: ModalState) => void> = [];
@@ -86,7 +159,12 @@ function useModalState(): ModalState {
 
 // ---- Public API ----
 
-/** Call before starting a push/pull to show the modal. */
+/** Open the wizard with the safety-first flow. */
+export function openWizard(ctx: WizardContext): void {
+  setState({ phase: 'setup', ctx });
+}
+
+/** Legacy: start directly in running phase (used by undo/confirm from panel). */
 export function showSyncModal(mode: SyncMode, appLabel: string): void {
   setState({ phase: 'running', mode, appLabel });
 }
@@ -95,15 +173,13 @@ export function showSyncModal(mode: SyncMode, appLabel: string): void {
 export function failSyncModal(error: string): void {
   if (globalState.phase === 'idle') return;
   const mode = 'mode' in globalState ? globalState.mode : 'push';
-  setState({
-    phase: 'error',
-    mode,
-    appLabel: globalState.appLabel,
-    error,
-  });
+  let appLabel = '';
+  if ('appLabel' in globalState) appLabel = (globalState as { appLabel: string }).appLabel;
+  else if ('ctx' in globalState) appLabel = (globalState as { ctx: WizardContext }).ctx.appLabel;
+  setState({ phase: 'error', mode, appLabel, error });
 }
 
-/** Dismiss the modal (used by the Close button on failures). */
+/** Dismiss the modal (used by Close buttons). */
 export function dismissSyncModal(): void {
   setState({ phase: 'idle' });
 }
@@ -114,8 +190,6 @@ export function showPostPushModal(appLabel: string, undoRecordId: string): void 
 }
 
 // ---- Panel notification callback ----
-// SiteToolsPanel registers a callback to be notified when undo/confirm
-// completes inside the modal, so it can clear its lastPushUndoId state.
 let postPushActionCallback: (() => void) | undefined;
 
 export function onPostPushAction(cb: () => void): () => void {
@@ -152,7 +226,6 @@ function ensureSubscribed() {
   });
 
   subscribeJobDone((event: JobDoneEvent) => {
-    // Don't transition if state is already post-push or not running
     if (globalState.phase !== 'running') return;
     if (event.status === 'success') {
       setState({
@@ -184,6 +257,237 @@ function formatBytes(bytes: number | undefined): string {
   return `${gb.toFixed(2)} GB`;
 }
 
+// ---- Stepper ----
+// Compact horizontal step indicator. Past steps show a checkmark, the
+// current step is highlighted (red on error), future steps are muted.
+function Stepper({
+  mode,
+  currentIndex,
+  isError,
+}: {
+  mode: WizardMode;
+  currentIndex: number;
+  isError?: boolean;
+}): React.ReactElement {
+  const steps = WIZARD_STEPS[mode];
+  return (
+    <div style={stepperStyles.row}>
+      {steps.map((label, i) => {
+        const isPast = i < currentIndex;
+        const isCurrent = i === currentIndex;
+        const dotBg = isPast
+          ? '#51bb7b'
+          : isCurrent
+            ? (isError ? '#e25151' : '#51bb7b')
+            : 'transparent';
+        const dotBorder = isPast || isCurrent
+          ? (isError && isCurrent ? '#e25151' : '#51bb7b')
+          : 'rgba(255,255,255,0.2)';
+        const dotColor = isPast || isCurrent ? '#fff' : 'rgba(255,255,255,0.4)';
+        const labelColor = isCurrent
+          ? 'rgba(255,255,255,0.95)'
+          : isPast
+            ? 'rgba(255,255,255,0.7)'
+            : 'rgba(255,255,255,0.4)';
+        return (
+          <React.Fragment key={i}>
+            <div style={stepperStyles.step}>
+              <div
+                style={{
+                  ...stepperStyles.dot,
+                  background: dotBg,
+                  borderColor: dotBorder,
+                  color: dotColor,
+                }}
+              >
+                {isPast ? '\u2713' : i + 1}
+              </div>
+              <div style={{ ...stepperStyles.label, color: labelColor, fontWeight: isCurrent ? 700 : 500 }}>
+                {label}
+              </div>
+            </div>
+            {i < steps.length - 1 && (
+              <div
+                style={{
+                  ...stepperStyles.connector,
+                  background: i < currentIndex ? '#51bb7b' : 'rgba(255,255,255,0.15)',
+                }}
+              />
+            )}
+          </React.Fragment>
+        );
+      })}
+    </div>
+  );
+}
+
+// ---- Setup phase (safety warnings) ----
+
+const WARN_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`;
+
+function SetupPhase({ ctx }: { ctx: WizardContext }): React.ReactElement {
+  const isPush = ctx.mode === 'push';
+  const isFleet = ctx.isFleetPull;
+  const accent = '#e07a3b';
+  const bg = 'rgba(224,122,59,0.08)';
+
+  const warningTitle = isFleet
+    ? 'This will create a new Local site'
+    : isPush
+      ? 'You are about to push to your live site'
+      : 'You are about to overwrite your local site';
+
+  const warningBody = isFleet
+    ? `A new site will be created in Local from "${ctx.appLabel}". A Cloudways backup will be taken before downloading.`
+    : isPush
+      ? "This will overwrite your live site\u2019s database and wp-content with your local copy. A backup snapshot will be taken before pushing."
+      : "This will overwrite your local site with the remote content. Your current local state will be replaced.";
+
+  return (
+    <>
+      <div
+        style={{
+          marginBottom: 22,
+          padding: '16px 18px',
+          borderRadius: 8,
+          background: bg,
+          borderLeft: `3px solid ${accent}`,
+          display: 'flex',
+          gap: 14,
+          alignItems: 'flex-start',
+        }}
+      >
+        <span
+          style={{ color: accent, flexShrink: 0, marginTop: 1 }}
+          dangerouslySetInnerHTML={{ __html: WARN_ICON_SVG }}
+        />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ color: 'rgba(255,255,255,0.95)', fontWeight: 600, fontSize: 14, marginBottom: 4 }}>
+            {warningTitle}
+          </div>
+          <div style={{ color: 'rgba(255,255,255,0.65)', fontSize: 13, lineHeight: 1.5 }}>
+            {warningBody}
+          </div>
+          {ctx.remoteUrl && (
+            <div style={{ color: 'rgba(255,255,255,0.5)', fontSize: 12, marginTop: 8 }}>
+              Target: <span style={{ color: 'rgba(255,255,255,0.8)', fontWeight: 600 }}>{ctx.remoteUrl}</span>
+            </div>
+          )}
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: 10 }}>
+        <Button onClick={dismissSyncModal} style={{ flex: 1 }}>
+          Cancel
+        </Button>
+        <Button onClick={() => setState({ phase: 'config', ctx })} style={{ flex: 1 }}>
+          Continue
+        </Button>
+      </div>
+    </>
+  );
+}
+
+// ---- Config phase (checkboxes + start button) ----
+
+function ConfigPhase({ ctx }: { ctx: WizardContext }): React.ReactElement {
+  const isPush = ctx.mode === 'push';
+  const isFleet = ctx.isFleetPull;
+  const [includes, setIncludes] = useState<SyncIncludes>({ ...DEFAULT_INCLUDES });
+  const [reactivateBreeze, setReactivateBreeze] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  const handleStart = async () => {
+    setBusy(true);
+    const mode: SyncMode = isFleet ? 'fleet-pull' : ctx.mode;
+    setState({ phase: 'running', mode, appLabel: ctx.appLabel });
+
+    try {
+      if (isPush) {
+        const plan = await ipcClient.planPush({
+          linkMode: ctx.linkMode,
+          serverId: ctx.serverId,
+          appId: ctx.appId,
+          localSiteId: ctx.siteId,
+          localUrl: ctx.localUrl,
+          webRootPath: ctx.webRootPath,
+          includes: includes as PushIncludes,
+          reactivateBreeze: ctx.breezeActive ? reactivateBreeze : false,
+        });
+        await ipcClient.runJob({ planId: plan.planId });
+        // Push succeeded — show post-push modal with undo/confirm
+        try {
+          const undos = await ipcClient.listUndo();
+          const latest = undos.records.find(
+            (r) => {
+              if (ctx.linkMode === 'api') {
+                return r.appId === ctx.appId && !r.undoneAt && !r.dismissedAt;
+              }
+              return r.localSiteId === ctx.siteId && !r.undoneAt && !r.dismissedAt;
+            },
+          );
+          if (latest) {
+            postPushActionCallback?.(); // clear any stale panel undo state
+            showPostPushModal(ctx.appLabel, latest.id);
+          }
+        } catch { /* non-fatal — modal will show generic done */ }
+      } else {
+        const plan = await ipcClient.planPull({
+          linkMode: isFleet ? 'api' : ctx.linkMode,
+          serverId: ctx.serverId,
+          appId: ctx.appId,
+          destinationName: ctx.appLabel,
+          localSiteId: isFleet ? undefined : ctx.siteId,
+          includes: includes as PullIncludes,
+        });
+        await ipcClient.runJob({ planId: plan.planId });
+      }
+    } catch (e) {
+      failSyncModal(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  return (
+    <>
+      {/* Context note moved above the checkbox panel so the user reads
+          mode-specific caveats before configuring includes. */}
+      {ctx.linkMode === 'sftp' && isPush && (
+        <div style={{ marginBottom: 16 }}>
+          <Banner variant="neutral">
+            SFTP mode takes a local snapshot before pushing (no Cloudways API backup).
+            You can undo via this snapshot after push completes.
+          </Banner>
+        </div>
+      )}
+      <SelectivePanel
+        heading={isPush ? 'Include in push' : 'Include in pull'}
+        includes={includes}
+        onChange={setIncludes}
+      />
+      {isPush && ctx.breezeActive && (
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer' }}>
+            <Checkbox checked={reactivateBreeze} onChange={() => setReactivateBreeze(!reactivateBreeze)} />
+            <div>
+              <Text style={{ fontWeight: 500 }}>Re-activate Breeze after push</Text>
+              <Text size="caption" tag="div" style={{ marginTop: 2 }}>
+                The caching plugin is excluded from sync because it requires Cloudways server configuration.
+              </Text>
+            </div>
+          </label>
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 10 }}>
+        <Button onClick={() => setState({ phase: 'setup', ctx })} disabled={busy} style={{ flex: 1 }}>
+          Back
+        </Button>
+        <Button onClick={handleStart} disabled={busy} style={{ flex: 1 }}>
+          {busy ? 'Starting\u2026' : isPush ? 'Start Push' : 'Start Pull'}
+        </Button>
+      </div>
+    </>
+  );
+}
+
 // ---- Post-push actions component ----
 
 function PostPushActions({ undoRecordId, appLabel }: { undoRecordId: string; appLabel: string }): React.ReactElement {
@@ -213,42 +517,94 @@ function PostPushActions({ undoRecordId, appLabel }: { undoRecordId: string; app
     }
   };
 
+  const checklist: Array<{ title: string; body: React.ReactNode }> = [
+    {
+      title: 'Purge the server cache',
+      body: (
+        <>
+          On Cloudways, open <strong>Application Settings &rarr; Purge All Caches</strong>.
+          This is required for new CSS, redirects, and content to appear.
+        </>
+      ),
+    },
+    {
+      title: 'Open your live site and verify it',
+      body: <>Make sure pages, links, and media load correctly.</>,
+    },
+    {
+      title: 'Confirm or undo this push',
+      body: (
+        <>
+          <strong>Confirm</strong> keeps the changes and removes the temporary backup from
+          the server. <strong>Undo</strong> restores the previous version (you will need to
+          purge cache again after undoing).
+        </>
+      ),
+    },
+  ];
+
   return (
     <>
       <div style={styles.bannerSlot}>
         <Banner variant="success">Successfully pushed to Cloudways.</Banner>
       </div>
-      <div style={postPushStyles.infoBox}>
-        <p style={postPushStyles.infoText}>
-          <strong>Seeing CSS issues or domain redirects?</strong> Go to{' '}
-          <strong>Cloudways &rarr; Application Settings &rarr; Purge All Caches</strong> to
-          clear the server cache.
-        </p>
-        <p style={postPushStyles.infoText}>
-          If problems persist after purging, you can undo this push. Note: you will
-          need to purge cache again after undoing.
-        </p>
-        <p style={postPushStyles.infoText}>
-          Once your site looks correct, <strong>confirm the push</strong> to clean up
-          the temporary backup stored on your server.
-        </p>
+      <div style={{ marginTop: 24, marginBottom: 22 }}>
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ color: 'rgba(255,255,255,0.95)', fontSize: 17, fontWeight: 700, letterSpacing: 0.1 }}>
+            Verify and finalize
+          </div>
+          <div style={{ color: 'rgba(255,255,255,0.55)', fontSize: 12, marginTop: 4 }}>
+            Complete these steps before closing the wizard.
+          </div>
+        </div>
+        <ol style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+          {checklist.map((item, i) => (
+            <li
+              key={i}
+              style={{
+                display: 'flex',
+                gap: 14,
+                padding: '10px 0',
+              }}
+            >
+              <div
+                style={{
+                  flexShrink: 0,
+                  width: 26,
+                  height: 26,
+                  borderRadius: '50%',
+                  background: 'rgba(81,187,123,0.15)',
+                  color: '#51bb7b',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: 12,
+                  fontWeight: 700,
+                  marginTop: 1,
+                }}
+              >
+                {i + 1}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ color: 'rgba(255,255,255,0.95)', fontSize: 14, fontWeight: 600, marginBottom: 3 }}>
+                  {item.title}
+                </div>
+                <div style={{ color: 'rgba(255,255,255,0.6)', fontSize: 12.5, lineHeight: 1.55 }}>
+                  {item.body}
+                </div>
+              </div>
+            </li>
+          ))}
+        </ol>
       </div>
-      <div style={postPushStyles.actions}>
-        <button type="button" style={postPushStyles.undoBtn} onClick={handleUndo} disabled={busy}>
+      <div style={{ display: 'flex', gap: 10 }}>
+        <Button onClick={handleUndo} disabled={busy} style={{ flex: 1 }}>
           Undo Push
-        </button>
-        <button type="button" style={postPushStyles.confirmBtn} onClick={handleConfirm} disabled={busy}>
+        </Button>
+        <Button onClick={handleConfirm} disabled={busy} style={{ flex: 1 }}>
           Confirm Push
-        </button>
+        </Button>
       </div>
-      <button
-        type="button"
-        style={postPushStyles.closeLink}
-        onClick={dismissSyncModal}
-        disabled={busy}
-      >
-        Close without action
-      </button>
     </>
   );
 }
@@ -259,18 +615,21 @@ function SyncModalContent(): React.ReactElement | null {
   const state = useModalState();
   const overlayRef = useRef<HTMLDivElement>(null);
 
-  // Block keyboard shortcuts / tab navigation to elements behind
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === 'Escape') e.stopPropagation();
+    // Block escape during running AND during the post-push Review step —
+    // user must explicitly Undo or Confirm; we do not allow them to bail
+    // out and leave a temporary backup orphaned on the server.
+    if (e.key === 'Escape' && state.phase !== 'running' && state.phase !== 'post-push') {
+      dismissSyncModal();
+    }
     if (e.key === 'Tab') e.preventDefault();
-  }, []);
+  }, [state.phase]);
 
-  // Prevent the Electron window from closing while a sync is running.
+  // Prevent Electron window close while a sync is running.
   useEffect(() => {
     if (state.phase !== 'running') return;
     const handler = (e: BeforeUnloadEvent) => {
       e.preventDefault();
-      // Electron requires returnValue to be set for the dialog to show.
       e.returnValue = 'A sync operation is in progress. Closing now may leave your site in a broken state.';
     };
     window.addEventListener('beforeunload', handler);
@@ -279,7 +638,56 @@ function SyncModalContent(): React.ReactElement | null {
 
   if (state.phase === 'idle') return null;
 
-  // Post-push has its own layout — render it separately below.
+  const wizardMode = getWizardMode(state);
+  const stepIndex = getStepIndex(state);
+  const stepperEl = wizardMode ? (
+    <Stepper mode={wizardMode} currentIndex={stepIndex} isError={state.phase === 'error'} />
+  ) : null;
+
+  // Wizard setup/config phases
+  if (state.phase === 'setup') {
+    return (
+      <div ref={overlayRef} style={styles.overlay} onKeyDown={handleKeyDown}>
+        <style>{MODAL_CSS}</style>
+        <div style={styles.stack}>
+          <div style={styles.modal}>
+            <div style={styles.header}>
+              <span style={styles.cwIcon} dangerouslySetInnerHTML={{ __html: CW_ICON }} />
+              <div style={styles.headerText}>
+                <Title size="s">{state.ctx.isFleetPull ? 'Pull to Local as new site' : state.ctx.mode === 'push' ? 'Push to Cloudways' : 'Pull from Cloudways'}</Title>
+                <Text size="caption" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{state.ctx.appLabel}</Text>
+              </div>
+            </div>
+            {stepperEl}
+            <SetupPhase ctx={state.ctx} />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (state.phase === 'config') {
+    return (
+      <div ref={overlayRef} style={styles.overlay} onKeyDown={handleKeyDown}>
+        <style>{MODAL_CSS}</style>
+        <div style={styles.stack}>
+          <div style={styles.modal}>
+            <div style={styles.header}>
+              <span style={styles.cwIcon} dangerouslySetInnerHTML={{ __html: CW_ICON }} />
+              <div style={styles.headerText}>
+                <Title size="s">{state.ctx.mode === 'push' ? 'Push to Cloudways' : 'Pull from Cloudways'}</Title>
+                <Text size="caption" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{state.ctx.appLabel}</Text>
+              </div>
+            </div>
+            {stepperEl}
+            <ConfigPhase ctx={state.ctx} />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Post-push has its own layout
   const isPostPush = state.phase === 'post-push';
 
   const MODE_LABELS: Record<SyncMode, { running: string; done: string; failed: string; success: string }> = {
@@ -293,7 +701,13 @@ function SyncModalContent(): React.ReactElement | null {
       running: 'Pulling from Cloudways',
       done: 'Pull complete',
       failed: 'Pull failed',
-      success: 'Pull completed — site updated from Cloudways.',
+      success: 'Pull completed \u2014 site updated from Cloudways.',
+    },
+    'fleet-pull': {
+      running: 'Pulling from Cloudways',
+      done: 'Pull complete',
+      failed: 'Pull failed',
+      success: 'New Local site created from Cloudways.',
     },
     undo: {
       running: 'Restoring from snapshot',
@@ -334,10 +748,12 @@ function SyncModalContent(): React.ReactElement | null {
           <div style={styles.header}>
             <span style={styles.cwIcon} dangerouslySetInnerHTML={{ __html: CW_ICON }} />
             <div style={styles.headerText}>
-              <div style={styles.headerTitle}>{headerTitle}</div>
-              <div style={styles.headerSubtitle}>{state.appLabel}</div>
+              <Title size="s">{headerTitle}</Title>
+              <Text size="caption" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{state.appLabel}</Text>
             </div>
           </div>
+
+          {stepperEl}
 
           {isRunning && (
             <>
@@ -345,7 +761,7 @@ function SyncModalContent(): React.ReactElement | null {
               <div style={styles.stepRow}>
                 <span className="cws-modal-spinner" />
                 <span style={styles.stepLabel}>
-                  {state.stepId ? (labels[state.stepId] ?? state.stepId) : 'Starting…'}
+                  {state.stepId ? (labels[state.stepId] ?? state.stepId) : 'Starting\u2026'}
                 </span>
                 {hasBytes && (
                   <span style={styles.percent}>{state.percent}%</span>
@@ -384,9 +800,9 @@ function SyncModalContent(): React.ReactElement | null {
               <div style={styles.bannerSlot}>
                 <Banner variant="success">{successMsg}</Banner>
               </div>
-              <button type="button" style={styles.dismissBtn} onClick={dismissSyncModal}>
+              <Button onClick={dismissSyncModal} style={{ width: '100%' }}>
                 Close
-              </button>
+              </Button>
             </>
           )}
 
@@ -402,9 +818,9 @@ function SyncModalContent(): React.ReactElement | null {
               <div style={styles.bannerSlot}>
                 <Banner variant="error">{state.error}</Banner>
               </div>
-              <button type="button" style={styles.dismissBtn} onClick={dismissSyncModal}>
+              <Button onClick={dismissSyncModal} style={{ width: '100%' }}>
                 Close
-              </button>
+              </Button>
             </>
           )}
         </div>
@@ -476,23 +892,23 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column' as const,
     alignItems: 'center',
     gap: 14,
-    width: 460,
+    width: 560,
     maxWidth: 'calc(100vw - 40px)',
   },
   modal: {
     width: '100%',
     boxSizing: 'border-box' as const,
     background: '#1e1f1f',
-    borderRadius: 10,
+    borderRadius: 12,
     border: '1px solid rgba(255,255,255,0.1)',
-    padding: '22px 26px',
+    padding: '28px 32px',
     boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
   },
   header: {
     display: 'flex',
     alignItems: 'center',
-    gap: 12,
-    marginBottom: 20,
+    gap: 14,
+    marginBottom: 22,
   },
   cwIcon: {
     display: 'inline-flex',
@@ -503,19 +919,6 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column' as const,
     gap: 2,
     minWidth: 0,
-  },
-  headerTitle: {
-    fontSize: 15,
-    fontWeight: 600,
-    color: '#fff',
-    lineHeight: 1.2,
-  },
-  headerSubtitle: {
-    fontSize: 12,
-    color: 'rgba(255,255,255,0.5)',
-    overflow: 'hidden' as const,
-    textOverflow: 'ellipsis' as const,
-    whiteSpace: 'nowrap' as const,
   },
   stepRow: {
     display: 'flex',
@@ -589,70 +992,51 @@ const styles: Record<string, React.CSSProperties> = {
   bannerSlot: {
     marginBottom: 16,
   },
-  dismissBtn: {
-    display: 'block',
-    width: '100%',
-    padding: '10px 0',
-    border: '1px solid rgba(255,255,255,0.15)',
-    borderRadius: 6,
-    background: 'transparent',
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: 500,
-    cursor: 'pointer',
+};
+
+const stepperStyles: Record<string, React.CSSProperties> = {
+  row: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 0,
+    marginBottom: 24,
+  },
+  step: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'center',
+    gap: 8,
+    flexShrink: 0,
+    minWidth: 72,
+  },
+  dot: {
+    width: 28,
+    height: 28,
+    borderRadius: '50%',
+    border: '2px solid',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: 12,
+    fontWeight: 700,
+    fontVariantNumeric: 'tabular-nums' as const,
+    transition: 'background 0.2s ease, border-color 0.2s ease, color 0.2s ease',
+  },
+  label: {
+    fontSize: 11,
+    letterSpacing: 0.2,
+    lineHeight: 1.2,
+    textAlign: 'center' as const,
+    transition: 'color 0.2s ease',
+  },
+  connector: {
+    flex: 1,
+    height: 2,
+    marginTop: 13, // vertically center against the 28px dot
+    minWidth: 16,
+    borderRadius: 2,
+    transition: 'background 0.2s ease',
   },
 };
 
-const postPushStyles: Record<string, React.CSSProperties> = {
-  infoBox: {
-    background: 'rgba(255,255,255,0.04)',
-    border: '1px solid rgba(255,255,255,0.08)',
-    borderRadius: 6,
-    padding: '14px 16px',
-    marginBottom: 16,
-  },
-  infoText: {
-    fontSize: 12,
-    lineHeight: 1.6,
-    color: 'rgba(255,255,255,0.7)',
-    margin: '0 0 8px',
-  },
-  actions: {
-    display: 'flex',
-    gap: 10,
-    marginBottom: 10,
-  },
-  undoBtn: {
-    flex: 1,
-    padding: '10px 0',
-    border: '1px solid rgba(255,170,100,0.4)',
-    borderRadius: 6,
-    background: 'rgba(255,170,100,0.08)',
-    color: '#ffaa64',
-    fontSize: 13,
-    fontWeight: 500,
-    cursor: 'pointer',
-  },
-  confirmBtn: {
-    flex: 1,
-    padding: '10px 0',
-    border: '1px solid rgba(81,187,123,0.4)',
-    borderRadius: 6,
-    background: 'rgba(81,187,123,0.12)',
-    color: '#51bb7b',
-    fontSize: 13,
-    fontWeight: 500,
-    cursor: 'pointer',
-  },
-  closeLink: {
-    display: 'block',
-    width: '100%',
-    padding: '6px 0',
-    border: 'none',
-    background: 'transparent',
-    color: 'rgba(255,255,255,0.4)',
-    fontSize: 11,
-    cursor: 'pointer',
-    textAlign: 'center' as const,
-  },
-};

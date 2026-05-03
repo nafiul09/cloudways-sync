@@ -46,7 +46,13 @@ async function runHandler<T>(fn: () => Promise<T>): Promise<IpcResult<T>> {
   }
 }
 
-/** Map a zod-parsed Server into the IPC-safe summary. */
+/** True if a Cloudways app is a WordPress site (incl. WooCommerce, Multisite). */
+function isWordPressApp(a: App): boolean {
+  return a.application.toLowerCase().includes('wordpress');
+}
+
+/** Map a zod-parsed Server into the IPC-safe summary. `appCount` reflects
+ *  only WordPress apps because Cloudways Sync exclusively syncs WP sites. */
 export function toServerSummary(s: Server): ServerSummary {
   return {
     id: s.id,
@@ -58,7 +64,7 @@ export function toServerSummary(s: Server): ServerSummary {
     serverFqdn: s.server_fqdn,
     masterUser: s.master_user,
     status: s.status,
-    appCount: s.apps.length,
+    appCount: s.apps.filter(isWordPressApp).length,
   };
 }
 
@@ -114,7 +120,13 @@ export function registerFleetHandlers({ addIpcAsyncListener, connection, appPass
               retriable: false,
             });
           }
-          return { apps: server.apps.map((a) => toAppSummary(a, server.id)) };
+          // Cloudways Sync only handles WordPress — hide PHP/Magento/etc.
+          // apps so the user can't accidentally try to link to them.
+          return {
+            apps: server.apps
+              .filter(isWordPressApp)
+              .map((a) => toAppSummary(a, server.id)),
+          };
         });
       },
     ],
