@@ -109,11 +109,18 @@ class FakeSsh {
     if (command.includes('core version')) return { code: 0, stdout: '6.5.0\n', stderr: '' };
     if (command.includes('core is-installed --network')) return { code: 1, stdout: '', stderr: '' };
     if (command.startsWith('gzip -df')) return { code: 0, stdout: '', stderr: '' };
+    if (command.includes('db reset')) return { code: 0, stdout: '', stderr: '' };
     if (command.includes('db import')) return { code: 0, stdout: '', stderr: '' };
-    if (command.includes('search-replace')) return { code: 0, stdout: '', stderr: '' };
+    if (command.includes('search-replace')) return { code: 0, stdout: 'Success: Made 42 replacements.\n', stderr: '' };
+    if (command.includes('option update')) return { code: 0, stdout: 'Success: Updated', stderr: '' };
+    if (command.includes('db query')) return { code: 0, stdout: '', stderr: '' };
     if (command.includes('cache flush')) return { code: 0, stdout: '', stderr: '' };
     if (command.includes('rewrite flush')) return { code: 0, stdout: '', stderr: '' };
+    if (command.includes('plugin activate')) return { code: 0, stdout: 'Plugin activated.', stderr: '' };
+    if (command.includes('breeze purge')) return { code: 0, stdout: '', stderr: '' };
+    if (command.startsWith('curl')) return { code: 0, stdout: '', stderr: '' };
     if (command.startsWith('tar xzf')) return { code: 0, stdout: '', stderr: '' };
+    if (command.startsWith('rm -rf')) return { code: 0, stdout: '', stderr: '' };
     if (command.startsWith('rm -f')) return { code: 0, stdout: '', stderr: '' };
     return { code: 0, stdout: '', stderr: '' };
   }
@@ -205,6 +212,8 @@ describe('PushOrchestrator', () => {
     expect(fakeSsh.commands.some((cmd) => cmd.startsWith('gzip -df'))).toBe(true);
     expect(fakeSsh.commands.some((cmd) => cmd.includes('db import'))).toBe(true);
     expect(fakeSsh.commands.some((cmd) => cmd.includes('search-replace'))).toBe(true);
+    // Safety-net SQL update ran
+    expect(fakeSsh.commands.some((cmd) => cmd.includes("db query") && cmd.includes('home') && cmd.includes('siteurl'))).toBe(true);
     // wp-content tar extraction ran on server
     expect(fakeSsh.commands.some((cmd) => cmd.startsWith('tar xzf'))).toBe(true);
     // Cache flush ran
@@ -385,5 +394,65 @@ describe('PushOrchestrator', () => {
     expect(rec.localSiteId).toBe('local-1');
     expect(rec.snapshot?.kind).toBe('local-tar');
     expect(rec.snapshot?.remoteContentTarPath).toContain('.cwsync-snapshots/');
+  });
+
+  it('runs protocol-flipped search-replace when protocols differ', async () => {
+    const userDataDir = tmpDir();
+    const webRootPath = createLocalWebroot();
+    const fakeSsh = new FakeSsh();
+    const fakeSftp = new FakeSftp();
+    const undoLedger = new UndoLedger(userDataDir);
+
+    const orchestrator = new PushOrchestrator({
+      link: makeApiLink(makeClient()),
+      undoLedger,
+      userDataDir,
+      sshFactory: () => fakeSsh as unknown as SshClient,
+      sftpFactory: () => fakeSftp as unknown as SftpClient,
+      execLocal: fakeExecLocal(),
+      emitProgress: () => {},
+    });
+
+    // localUrl is https, remote is also https — but the flipped http variant should also run
+    const plan = makePlan({ webRootPath, localUrl: 'https://localhost:10075' });
+    await orchestrator.run(plan);
+
+    const srCmds = fakeSsh.commands.filter((cmd) => cmd.includes('search-replace'));
+    expect(srCmds).toHaveLength(2);
+    // Primary: https://localhost:10075
+    expect(srCmds[0]).toContain('https://localhost:10075');
+    // Flipped: http://localhost:10075
+    expect(srCmds[1]).toContain('http://localhost:10075');
+  });
+
+  it('SQL safety net runs after search-replace with correct target URL', async () => {
+    const userDataDir = tmpDir();
+    const webRootPath = createLocalWebroot();
+    const fakeSsh = new FakeSsh();
+    const fakeSftp = new FakeSftp();
+    const undoLedger = new UndoLedger(userDataDir);
+
+    const orchestrator = new PushOrchestrator({
+      link: makeApiLink(makeClient()),
+      undoLedger,
+      userDataDir,
+      sshFactory: () => fakeSsh as unknown as SshClient,
+      sftpFactory: () => fakeSftp as unknown as SftpClient,
+      execLocal: fakeExecLocal(),
+      emitProgress: () => {},
+    });
+
+    await orchestrator.run(makePlan({ webRootPath }));
+
+    // db query safety net should come after search-replace
+    const cmds = fakeSsh.commands;
+    const lastSrIdx = cmds.findLastIndex((cmd) => cmd.includes('search-replace'));
+    const sqlUpdateIdx = cmds.findIndex((cmd) => cmd.includes('db query') && cmd.includes('siteurl'));
+
+    expect(lastSrIdx).toBeGreaterThan(-1);
+    expect(sqlUpdateIdx).toBeGreaterThan(lastSrIdx);
+    // The SQL should use the mapping's remote URL (https://example.com)
+    const sqlCmd = cmds.find((cmd) => cmd.includes('db query') && cmd.includes('siteurl'));
+    expect(sqlCmd).toContain('https://example.com');
   });
 });

@@ -219,7 +219,9 @@ export function Button({
     ...style,
   };
 
-  // ::after pseudo-element for the 2px border (matches library pattern)
+  // ::after pseudo-element for the 2px border (matches library pattern).
+  // Mirror cursor here too — even with pointer-events:none, some Electron
+  // builds resolve the cursor against the topmost element.
   const afterStyle: React.CSSProperties = {
     content: '""',
     position: 'absolute',
@@ -231,6 +233,7 @@ export function Button({
     borderRadius: 500,
     transition: 'border 0.1s ease',
     pointerEvents: 'none',
+    cursor: disabled ? 'not-allowed' : 'pointer',
   };
 
   return (

@@ -95,7 +95,7 @@ describe('IPC fleet handlers', () => {
       ok: true,
       data: {
         servers: [
-          { id: 1, label: 'do-prod-1', cloud: 'do', appCount: 2, publicIp: '1.2.3.4' },
+          { id: 1, label: 'do-prod-1', cloud: 'do', appCount: 1, publicIp: '1.2.3.4' },
           { id: 2, label: 'vultr-dev', cloud: 'vultr', appCount: 0 },
         ],
       },
@@ -130,9 +130,9 @@ describe('IPC fleet handlers', () => {
     );
     expect(ok.ok).toBe(true);
     if (ok.ok) {
+      // Only WordPress apps are returned (non-WP apps are filtered out)
       expect(ok.data.apps).toEqual([
         expect.objectContaining({ id: 101, label: 'Blog', isWordPress: true, serverId: 1 }),
-        expect.objectContaining({ id: 102, label: 'API', isWordPress: false, serverId: 1 }),
       ]);
     }
   });

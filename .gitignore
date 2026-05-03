@@ -34,3 +34,6 @@ coverage/
 
 # TypeScript incremental
 *.tsbuildinfo
+
+# Development planning docs
+\[plan\]/

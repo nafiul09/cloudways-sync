@@ -20,6 +20,8 @@ import {
   type CancelJobResponse,
   type DismissUndoRequest,
   type DismissUndoResponse,
+  type GetLocalSiteRequest,
+  type GetLocalSiteResponse,
   type GetMappingByAppRequest,
   type GetMappingByAppResponse,
   type GetMappingRequest,
@@ -174,6 +176,29 @@ export function registerSyncHandlers({
           });
         }
       }
+
+      // Resolve the real local URL from the WordPress database.
+      // The renderer's guess (site.url || http://domain) may not match
+      // what's actually stored in wp_options (e.g. https://localhost:10075).
+      const rendererUrl = payload.localUrl;
+      try {
+        const site = services.siteData.getSite(payload.localSiteId);
+        if (site) {
+          if (!services.siteProcessManager.hasRunningProcess(site)) {
+            await services.siteProcessManager.start(site);
+          }
+          await services.siteDatabase.waitForDB(site);
+          const dbHome = await services.wpCli.getOption(site, 'home');
+          console.log('[CWS Push] renderer localUrl=%s, DB home=%s', rendererUrl, dbHome);
+          if (dbHome?.trim()) {
+            payload.localUrl = dbHome.trim();
+          }
+        }
+      } catch (err) {
+        // Non-fatal: fall back to the renderer-supplied localUrl.
+        console.warn('[CWS Push] Could not read local DB home, using renderer value:', rendererUrl, err);
+      }
+
       const plan = jobs.createPushPlan(payload);
       return { planId: plan.id, steps: plan.steps };
     });
@@ -635,6 +660,21 @@ export function registerSyncHandlers({
     });
   });
 
+  addIpcAsyncListener(CHANNELS.GET_LOCAL_SITE, (...args: unknown[]) => {
+    const payload = args[0] as GetLocalSiteRequest | undefined;
+    return runHandler<GetLocalSiteResponse>(async () => {
+      const id = payload?.localSiteId?.trim();
+      if (!id) return { site: null };
+      const site = services.siteData.getSite(id);
+      if (!site) return { site: null };
+      const url = (site as { url?: string }).url
+        || `http://${(site as { domain?: string }).domain ?? ''}`;
+      const webRootPath = (site as { paths?: { webRoot?: string } }).paths?.webRoot
+        || `${(site as { path?: string }).path ?? ''}/app/public`;
+      return { site: { id: site.id, url, webRootPath } };
+    });
+  });
+
   // --- SFTP-only link mode handlers ---
 
   addIpcAsyncListener(CHANNELS.PROBE_SFTP, (...args: unknown[]) => {
@@ -718,6 +758,7 @@ export function registerSyncHandlers({
       return { mapping };
     });
   });
+
 }
 
 function validateSftpProbePayload(payload: ProbeSftpRequest | undefined): void {

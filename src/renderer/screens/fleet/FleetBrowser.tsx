@@ -10,39 +10,19 @@
 import React, { useEffect, useState } from 'react';
 import {
   Banner,
-  Checkbox,
   Spinner,
   TextButton,
   Title,
   Text,
   Button,
 } from '../../components/ui';
-import { ipcClient, IpcCallError, subscribeJobProgress } from '../../ipcClient';
+import { ipcClient, IpcCallError } from '../../ipcClient';
+import { openWizard } from '../../SyncModal';
 import type {
   AppDetail as AppDetailPayload,
   AppSummary,
-  JobProgressEvent,
-  PullIncludes,
   ServerSummary,
 } from '../../../shared/ipcTypes';
-
-// Short human labels for the pull steps the orchestrator emits.
-// Kept here (not imported from JobStore) because JobStore lives in
-// main/ and must not be pulled into the renderer bundle.
-const PULL_STEP_LABELS: Record<string, string> = {
-  validate: 'Validating',
-  backup: 'Taking Cloudways backup',
-  ssh: 'Connecting over SSH',
-  metadata: 'Reading WordPress metadata',
-  'db-export': 'Exporting remote DB',
-  'download-db': 'Downloading DB dump',
-  'download-content': 'Downloading wp-content',
-  'local-site': 'Importing into Local',
-  'local-content': 'Installing wp-content',
-  'local-db': 'Importing DB into Local',
-  'search-replace': 'Rewriting URLs',
-  manifest: 'Writing manifest',
-};
 
 const PROVIDER_LABELS: Record<string, string> = {
   do: 'DigitalOcean',
@@ -373,51 +353,24 @@ function AppDetailView({
   const [detail, setDetail] = useState<AppDetailPayload | undefined>();
   const [err, setErr] = useState<string | undefined>();
   const [reveal, setReveal] = useState(false);
-  const [pullBusy, setPullBusy] = useState(false);
-  const [pullResult, setPullResult] = useState<string | undefined>();
-  const [pullErr, setPullErr] = useState<string | undefined>();
   const [credentialBusy, setCredentialBusy] = useState(false);
   const [credentialErr, setCredentialErr] = useState<string | undefined>();
-  const [pullStep, setPullStep] = useState<
-    { stepId: string; percent?: number; detail?: string } | undefined
+  const [smokeBusy, setSmokeBusy] = useState(false);
+  const [smokeResult, setSmokeResult] = useState<
+    { home: string; stderr: string; elapsedMs: number } | undefined
   >();
-  const [includes, setIncludes] = useState<PullIncludes>({
-    database: true,
-    wpContent: true,
-    uploads: true,
-    plugins: true,
-    themes: true,
-    muPlugins: true,
-    languages: true,
-  });
-
-  // Subscribe to JOB_PROGRESS so the pull button can surface which step
-  // is currently running.
-  useEffect(() => {
-    const unsubscribe = subscribeJobProgress((event: JobProgressEvent) => {
-      const percent =
-        typeof event.totalBytes === 'number' &&
-        event.totalBytes > 0 &&
-        typeof event.bytesTransferred === 'number'
-          ? Math.min(100, Math.round((event.bytesTransferred / event.totalBytes) * 100))
-          : undefined;
-      if (event.status === 'running') {
-        setPullStep({ stepId: event.stepId, percent, detail: event.detail });
-      } else if (event.status === 'success' || event.status === 'failed') {
-        setPullStep(undefined);
-      }
-    });
-    return unsubscribe;
-  }, []);
+  const [smokeErr, setSmokeErr] = useState<string | undefined>();
+  const [showSmoke, setShowSmoke] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
     setDetail(undefined);
     setErr(undefined);
     setReveal(false);
-    setPullResult(undefined);
-    setPullErr(undefined);
     setCredentialErr(undefined);
+    setSmokeResult(undefined);
+    setSmokeErr(undefined);
+    setShowSmoke(true);
     ipcClient
       .getApp({ serverId, appId })
       .then((res) => {
@@ -440,46 +393,39 @@ function AppDetailView({
     );
   }
 
+  const hasPassword = Boolean(detail.sftp.password);
   const primaryUrl = detail.appFqdn ? `https://${detail.appFqdn}` : null;
-  const runPull = async () => {
-    setPullBusy(true);
-    setPullResult(undefined);
-    setPullErr(undefined);
-    setPullStep(undefined);
+
+  const handlePull = () => {
+    openWizard({
+      mode: 'pull',
+      appLabel: detail.label,
+      siteId: '',
+      localUrl: '',
+      webRootPath: '',
+      remoteUrl: primaryUrl || undefined,
+      linkMode: 'api',
+      serverId: detail.serverId,
+      appId: detail.id,
+      isFleetPull: true,
+    });
+  };
+
+  const runSmoke = async () => {
+    setSmokeBusy(true);
+    setSmokeErr(undefined);
+    setSmokeResult(undefined);
+    setShowSmoke(true);
     try {
-      const plan = await ipcClient.planPull({
-        serverId: detail.serverId,
-        appId: detail.id,
-        destinationName: detail.label,
-        serverLabel: detail.server.label,
-        includes,
-      });
-      const job = await ipcClient.runJob({ planId: plan.planId });
-      setPullResult(job.localUrl ? `Pulled into Local: ${job.localUrl}` : 'Pull completed.');
+      const res = await ipcClient.smokeApp({ serverId: detail.serverId, appId: detail.id });
+      setSmokeResult({ home: res.home, stderr: res.stderr, elapsedMs: res.elapsedMs });
     } catch (e) {
-      setPullErr(e instanceof Error ? e.message : String(e));
+      setSmokeErr(e instanceof Error ? e.message : String(e));
     } finally {
-      setPullBusy(false);
-      setPullStep(undefined);
+      setSmokeBusy(false);
     }
   };
 
-  const pullLabel = (() => {
-    if (!pullBusy) return 'Pull to Local';
-    if (!pullStep) return 'Pulling…';
-    const label = PULL_STEP_LABELS[pullStep.stepId] ?? pullStep.stepId;
-    return pullStep.percent != null
-      ? `Pulling — ${label} (${pullStep.percent}%)`
-      : `Pulling — ${label}`;
-  })();
-  // The orchestrator sends the current file path in `detail` during
-  // wp-content mirroring. Surfacing it as a secondary line makes
-  // stalls on individual files obvious, even when the per-file
-  // percent jumps straight to 100%.
-  const pullSubLabel =
-    pullBusy && pullStep?.detail && (pullStep.stepId === 'download-content' || pullStep.stepId === 'download-db')
-      ? pullStep.detail
-      : undefined;
   const createCredentials = async () => {
     setCredentialBusy(true);
     setCredentialErr(undefined);
@@ -509,43 +455,59 @@ function AppDetailView({
         </div>
       </div>
 
-      {detail.isWordPress && (
-        <>
-          <div style={styles.actionBar}>
-            <Button onClick={runPull} disabled={pullBusy || !detail.sftp.password}>
-              {pullLabel}
-            </Button>
-            {pullSubLabel && (
-              <div style={{ marginTop: 6, fontSize: 11, opacity: 0.65 }}>
-                {pullSubLabel}
-              </div>
-            )}
-          </div>
-          {!pullBusy && (
-            <SelectivePanel
-              heading="Include in pull"
-              includes={includes}
-              onChange={setIncludes}
-            />
-          )}
-        </>
-      )}
-      {pullErr && (
-        <div style={styles.banner}>
-          <Banner variant="error">{pullErr}</Banner>
-        </div>
-      )}
-      {pullResult && (
-        <div style={styles.banner}>
-          <Banner variant="success">{pullResult}</Banner>
-        </div>
-      )}
-      {detail.isWordPress && !detail.sftp.password && (
+      {/* State A: No SSH/SFTP — show create-credentials notice only */}
+      {detail.isWordPress && !hasPassword && (
         <CredentialsMissingNotice
           busy={credentialBusy}
           error={credentialErr}
           onCreate={createCredentials}
         />
+      )}
+
+      {/* State B: SSH/SFTP exists — action bar + smoke results + include panel */}
+      {detail.isWordPress && hasPassword && (
+        <>
+          <div style={styles.actionBar}>
+            <Button onClick={handlePull}>
+              Pull to Local as new site
+            </Button>
+            <Button
+              onClick={runSmoke}
+              disabled={smokeBusy}
+              style={{ marginLeft: 8 }}
+            >
+              {smokeBusy ? 'Testing…' : smokeResult || smokeErr ? 'Re-test WP-CLI over SSH' : 'Test WP-CLI over SSH'}
+            </Button>
+          </div>
+          {showSmoke && smokeErr && (
+            <div style={styles.smokeBox}>
+              <div style={styles.smokeBoxHeader}>
+                <button type="button" style={styles.smokeClose} onClick={() => setShowSmoke(false)} aria-label="Close">&times;</button>
+              </div>
+              <Banner variant="error">{smokeErr}</Banner>
+            </div>
+          )}
+          {showSmoke && smokeResult && (
+            <div style={styles.smokeBox}>
+              <div style={styles.smokeBoxHeader}>
+                <button type="button" style={styles.smokeClose} onClick={() => setShowSmoke(false)} aria-label="Close">&times;</button>
+              </div>
+              <ul className="TableList">
+                <Row label="home">
+                  <ValueWithCopy value={smokeResult.home || '—'} mono />
+                </Row>
+                <Row label="elapsed">
+                  <Text>{smokeResult.elapsedMs} ms</Text>
+                </Row>
+                {smokeResult.stderr && (
+                  <Row label="stderr">
+                    <span style={styles.monoValue}>{smokeResult.stderr}</span>
+                  </Row>
+                )}
+              </ul>
+            </div>
+          )}
+        </>
       )}
 
       {!detail.isWordPress && (
@@ -604,96 +566,11 @@ function AppDetailView({
         </Row>
       </ul>
 
-      <SectionHeader title="Database" />
-      <ul className="TableList">
-        <Row label="Name">
-          <ValueWithCopy value={detail.db.name || '—'} mono />
-        </Row>
-        <Row label="User">
-          <ValueWithCopy value={detail.db.user || '—'} mono />
-        </Row>
-        <Row label="Password">
-          <Secret reveal={reveal} value={detail.db.password} />
-        </Row>
-      </ul>
 
-      {detail.isWordPress && (
-        <SmokeTestSection
-          serverId={detail.serverId}
-          appId={detail.id}
-          hasApiPassword={Boolean(detail.sftp.password)}
-        />
-      )}
     </div>
   );
 }
 
-// Small Phase 4 diagnostic: opens SSH, runs `wp option get home`,
-// shows the raw stdout so the user can verify their credentials,
-// network path, and wp-cli are all wired up before attempting a pull.
-function SmokeTestSection({
-  serverId,
-  appId,
-  hasApiPassword,
-}: {
-  serverId: number;
-  appId: number;
-  hasApiPassword: boolean;
-}): React.ReactElement {
-  const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<{ home: string; stderr: string; elapsedMs: number } | undefined>();
-  const [error, setError] = useState<string | undefined>();
-
-  const run = async () => {
-    setBusy(true);
-    setError(undefined);
-    setResult(undefined);
-    try {
-      const res = await ipcClient.smokeApp({
-        serverId,
-        appId,
-      });
-      setResult({ home: res.home, stderr: res.stderr, elapsedMs: res.elapsedMs });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <>
-      <SectionHeader
-        title="Connection test"
-        action={
-          <Button onClick={run} disabled={busy || !hasApiPassword}>
-            {busy ? 'Testing…' : 'Test WP-CLI over SSH'}
-          </Button>
-        }
-      />
-      {error && (
-        <div style={styles.banner}>
-          <Banner variant="error">{error}</Banner>
-        </div>
-      )}
-      {result && (
-        <ul className="TableList">
-          <Row label="home">
-            <ValueWithCopy value={result.home || '—'} mono />
-          </Row>
-          <Row label="elapsed">
-            <Text>{result.elapsedMs} ms</Text>
-          </Row>
-          {result.stderr && (
-            <Row label="stderr">
-              <span style={styles.monoValue}>{result.stderr}</span>
-            </Row>
-          )}
-        </ul>
-      )}
-    </>
-  );
-}
 
 function CredentialsMissingNotice({
   busy,
@@ -723,116 +600,6 @@ function CredentialsMissingNotice({
     </div>
   );
 }
-
-// --- Selective pull panel ---
-
-type SelectivePanelProps = {
-  heading?: string;
-  includes: PullIncludes;
-  onChange: (next: PullIncludes) => void;
-};
-
-const WP_CONTENT_OPTIONS: Array<{ key: keyof PullIncludes; label: string }> = [
-  { key: 'uploads', label: 'Uploads (media)' },
-  { key: 'plugins', label: 'Plugins' },
-  { key: 'themes', label: 'Themes' },
-  { key: 'muPlugins', label: 'MU-Plugins' },
-  { key: 'languages', label: 'Languages' },
-];
-
-function SelectivePanel({ heading = 'Include in sync', includes, onChange }: SelectivePanelProps): React.ReactElement {
-  const toggle = (key: keyof PullIncludes) => {
-    const next = { ...includes, [key]: !includes[key] };
-    // If all wp-content sub-options are off, turn off wpContent too.
-    // If any sub-option is on, ensure wpContent is on.
-    const anySubOn = WP_CONTENT_OPTIONS.some((o) => next[o.key]);
-    next.wpContent = anySubOn;
-    onChange(next);
-  };
-
-  const toggleWpContent = () => {
-    const next = { ...includes };
-    const newVal = !includes.wpContent;
-    next.wpContent = newVal;
-    for (const o of WP_CONTENT_OPTIONS) {
-      next[o.key] = newVal;
-    }
-    onChange(next);
-  };
-
-  return (
-    <div style={selectiveStyles.panel}>
-      <Text style={selectiveStyles.heading}>{heading}</Text>
-      <div style={selectiveStyles.grid}>
-        <label style={selectiveStyles.item}>
-          <Checkbox
-            checked={includes.database}
-            onChange={() => toggle('database')}
-          />
-          <span style={selectiveStyles.label}>Database</span>
-        </label>
-        <label style={selectiveStyles.item}>
-          <Checkbox
-            checked={includes.wpContent}
-            onChange={toggleWpContent}
-          />
-          <span style={selectiveStyles.label}>wp-content (all)</span>
-        </label>
-        {includes.wpContent && (
-          <div style={selectiveStyles.subGroup}>
-            {WP_CONTENT_OPTIONS.map((opt) => (
-              <label key={opt.key} style={selectiveStyles.item}>
-                <Checkbox
-                  checked={includes[opt.key] as boolean}
-                  onChange={() => toggle(opt.key)}
-                />
-                <span style={selectiveStyles.label}>{opt.label}</span>
-              </label>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-const selectiveStyles: Record<string, React.CSSProperties> = {
-  panel: {
-    marginBottom: 16,
-    padding: '12px 16px',
-    background: 'rgba(255,255,255,0.04)',
-    borderRadius: 6,
-  },
-  heading: {
-    fontSize: 12,
-    fontWeight: 600,
-    textTransform: 'uppercase' as const,
-    letterSpacing: 0.5,
-    opacity: 0.6,
-    marginBottom: 8,
-  },
-  grid: {
-    display: 'flex',
-    flexDirection: 'column' as const,
-    gap: 6,
-  },
-  subGroup: {
-    paddingLeft: 24,
-    display: 'flex',
-    flexDirection: 'column' as const,
-    gap: 6,
-  },
-  item: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    cursor: 'pointer',
-    fontSize: 13,
-  },
-  label: {
-    userSelect: 'none' as const,
-  },
-};
 
 // --- Small building blocks ---
 
@@ -968,6 +735,27 @@ const styles: Record<string, React.CSSProperties> = {
   },
   banner: {
     marginBottom: 16,
+  },
+  smokeBox: {
+    background: '#262727',
+    borderRadius: 6,
+    padding: '4px 16px 4px',
+    marginBottom: 16,
+    position: 'relative' as const,
+  },
+  smokeBoxHeader: {
+    display: 'flex',
+    justifyContent: 'flex-end',
+    padding: '4px 0 0',
+  },
+  smokeClose: {
+    background: 'transparent',
+    border: 'none',
+    color: 'rgba(255,255,255,0.5)',
+    fontSize: 18,
+    cursor: 'pointer',
+    padding: '0 2px',
+    lineHeight: 1,
   },
   sectionHeader: {
     display: 'flex',
