@@ -25,19 +25,20 @@ Always run `npm run build && npm run link` after editing files under `src/` — 
 
 Every release **must** include:
 
-1. **Title format**: `Cloudways Sync for Local WP — v{version}`
+1. **Release title**: Just the version name (e.g. `v0.1.0 — Beta`, `v0.1.1-beta`). NOT the plugin name.
 2. **Body structure** (in this order):
-   - Highlights of changes, new features, and updates
-   - Install section (copy from below)
-   - Requirements section (copy from below)
-   - Development section (clone + npm install + npm run link)
-   - Link to full CHANGELOG.md
+   - `## Cloudways Sync for Local WP — v{version}` heading
+   - Short description of the release
+   - Changes, new features, fixes
+   - Install section
+   - Requirements section
+   - "For developers" section linking to CONTRIBUTING.md
 
 3. **Standard Install section** (always include):
    ```
    ### Install
 
-   1. Download `local-addon-cloudwayssync-{version}.tgz` below
+   1. Download `local-addon-cloudwayssync-{version}.tgz` from the Assets below
    2. Open Local WP → **Add-ons** → **Installed** → **Install from disk**
    3. Select the `.tgz` file and restart Local (Cmd+Q / Alt+F4, then reopen)
    4. Open any site's **Tools** tab → **Cloudways Sync** to get started
@@ -51,19 +52,16 @@ Every release **must** include:
    - A Cloudways account with API access (email + API key) or SSH/SFTP credentials
    ```
 
-5. **Standard Development section** (always include):
+5. **For developers section** (always include):
    ```
-   ### Development
+   ### For developers
 
-   git clone https://github.com/nafiul09/cloudways-sync.git
-   cd cloudways-sync
-   npm install
-   npm run build && npm run link
-   # Restart Local WP to load the add-on
+   See [CONTRIBUTING.md](https://github.com/nafiul09/cloudways-sync/blob/main/CONTRIBUTING.md) for the development setup.
    ```
 
-6. **Release status**: Use full release (not pre-release) unless explicitly told otherwise.
-7. **Attach**: The `.tgz` package from `dist/`.
+6. **Do NOT include**: git clone instructions, full changelog links, or development commands in the release body.
+7. **Release status**: Use full release (not pre-release) unless explicitly told otherwise.
+8. **Attach**: The `.tgz` package from `dist/`.
 
 ## Conventions
 

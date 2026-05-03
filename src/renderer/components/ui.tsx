@@ -1,28 +1,28 @@
 // Custom UI components that replicate @getflywheel/local-components styling.
-// Built for Local WP's dark-theme Electron renderer environment.
-// Colors, spacing, and typography match the local-components library exactly.
+// Theme-aware via CSS custom properties injected by theme/themeVars.ts.
+// Colors reference --cws-* variables that auto-switch between light/dark.
 
 import React, { useState, useEffect, useRef } from 'react';
 
-// ─── Color Palette (Local Dark Theme) ────────────────────────────────────────
+// ─── Color Palette (theme-aware via CSS custom properties) ──────────────────
 const C = {
-  white: '#ffffff',
-  gray15: '#e7e7e7',
-  gray25: '#c7c4c4',
-  gray75: '#9f9c9c',
-  gray: '#5d5e5e',
-  grayDark50: '#434344',
-  grayDark: '#262727',
-  grayDarkAlt: '#303031',
-  green: '#51bb7b',
+  white: 'var(--cws-text-primary)',
+  gray15: 'var(--cws-text-default)',
+  gray25: 'var(--cws-text-secondary)',
+  gray75: 'var(--cws-text-tertiary)',
+  gray: 'var(--cws-text-disabled)',
+  grayDark50: 'var(--cws-divider)',
+  grayDark: 'var(--cws-bg-surface)',
+  grayDarkAlt: 'var(--cws-bg-surface-alt)',
+  green: 'var(--cws-accent)',
   greenDark: '#267048',
-  greenDark50: '#419564',
+  greenDark50: 'var(--cws-accent-hover)',
   green15: '#D8F0DE',
-  red: '#ef4e65',
+  red: 'var(--cws-red)',
   redDark: '#8c2738',
   redDark50: '#ba3e51',
   red15: '#FFE2DF',
-  orange: '#f47820',
+  orange: 'var(--cws-orange)',
   orangeDark: '#8e4402',
 };
 
@@ -35,7 +35,7 @@ function InfoIcon(): React.ReactElement {
       <path
         fillRule="evenodd"
         clipRule="evenodd"
-        fill={C.white}
+        fill="#ffffff"
         d="M9 16C12.866 16 16 12.866 16 9C16 5.13401 12.866 2 9 2C5.13403 2 2 5.13401 2 9C2 12.866 5.13403 16 9 16ZM9 18C13.9705 18 18 13.9706 18 9C18 4.02943 13.9705 0 9 0C4.02954 0 0 4.02943 0 9C0 13.9706 4.02954 18 9 18ZM7.875 8C7.32275 8 6.875 8.44772 6.875 9C6.875 9.55228 7.32275 10 7.875 10H8V12.9375C8 13.4898 8.44775 13.9375 9 13.9375C9.55225 13.9375 10 13.4898 10 12.9375V9C10 8.44772 9.55225 8 9 8H7.875ZM9 6.75C9.62134 6.75 10.125 6.24632 10.125 5.625C10.125 5.00368 9.62134 4.5 9 4.5C8.37866 4.5 7.875 5.00368 7.875 5.625C7.875 6.24632 8.37866 6.75 9 6.75Z"
       />
     </svg>
@@ -49,7 +49,7 @@ function SuccessIcon(): React.ReactElement {
       <path
         fillRule="evenodd"
         clipRule="evenodd"
-        fill={C.white}
+        fill="#ffffff"
         d="M16 9C16 12.866 12.866 16 9 16C5.13401 16 2 12.866 2 9C2 5.13401 5.13401 2 9 2C12.866 2 16 5.13401 16 9ZM18 9C18 13.9706 13.9706 18 9 18C4.02944 18 0 13.9706 0 9C0 4.02944 4.02944 0 9 0C13.9706 0 18 4.02944 18 9ZM5.03032 10.0946L7.29289 12.3571C7.68342 12.7477 8.31658 12.7477 8.70711 12.3571L13.3033 7.76094C13.6938 7.37041 13.6938 6.73725 13.3033 6.34672C12.9128 5.9562 12.2796 5.9562 11.8891 6.34672L8 10.2358L6.44453 8.68034C6.05401 8.28982 5.42084 8.28982 5.03032 8.68034C4.6398 9.07087 4.6398 9.70403 5.03032 10.0946Z"
       />
     </svg>
@@ -63,7 +63,7 @@ function YieldIcon(): React.ReactElement {
       <path
         fillRule="evenodd"
         clipRule="evenodd"
-        fill={C.white}
+        fill="#ffffff"
         d="M18.8348 10.9877L13.4981 2.68623L13.4408 2.59696L13.4408 2.59693C13.1135 2.08739 12.7582 1.53413 12.4008 1.12536C11.9993 0.666244 11.2645 0 10.1334 0C9.00227 0 8.26756 0.666245 7.86606 1.12536C7.50859 1.53414 7.15327 2.08742 6.82603 2.59698L6.76869 2.68623L1.43203 10.9877L1.36967 11.0847L1.36966 11.0847C0.987648 11.6784 0.589021 12.298 0.343794 12.8408C0.0823667 13.4194 -0.271713 14.4826 0.331937 15.5883C0.935587 16.694 2.0214 16.9711 2.6495 17.0641C3.23868 17.1513 3.97543 17.151 4.68147 17.1508L4.79674 17.1507H15.4701L15.5854 17.1508C16.2914 17.151 17.0281 17.1513 17.6173 17.0641C18.2454 16.9711 19.3312 16.694 19.9349 15.5883C20.5385 14.4826 20.1844 13.4194 19.923 12.8408C19.6778 12.298 19.2792 11.6784 18.8972 11.0847L18.8348 10.9877ZM17.1524 12.0692L11.8158 3.76774C11.0582 2.58925 10.6794 2 10.1334 2C9.58746 2 9.20865 2.58925 8.45105 3.76774L3.11438 12.0692C2.24014 13.4292 1.80302 14.1091 2.08736 14.6299C2.3717 15.1507 3.18005 15.1507 4.79674 15.1507H15.4701C17.0868 15.1507 17.8951 15.1507 18.1795 14.6299C18.4638 14.1091 18.0267 13.4292 17.1524 12.0692ZM10.2584 10.8108C9.70612 10.8108 9.25841 10.3631 9.25841 9.81078V5.81078C9.25841 5.25849 9.70612 4.81078 10.2584 4.81078C10.8107 4.81078 11.2584 5.25849 11.2584 5.81078V9.81078C11.2584 10.3631 10.8107 10.8108 10.2584 10.8108ZM9.13341 12.7458C9.13341 12.1245 9.63709 11.6208 10.2584 11.6208C10.8797 11.6208 11.3834 12.1245 11.3834 12.7458C11.3834 13.3671 10.8797 13.8708 10.2584 13.8708C9.63709 13.8708 9.13341 13.3671 9.13341 12.7458Z"
       />
     </svg>
@@ -75,32 +75,34 @@ function YieldIcon(): React.ReactElement {
 type BannerVariant = 'error' | 'success' | 'warning' | 'neutral';
 
 // stripe1 = primary stripe color, stripe2 = secondary stripe color (lighter mix)
+// Banner colors are intentionally hardcoded — pastel background + dark text
+// is a self-contained treatment that looks correct in both light and dark.
 const bannerColors: Record<BannerVariant, {
   bg: string; stripe1: string; stripe2: string; text: string;
 }> = {
   neutral: {
-    bg: C.gray15,
-    stripe1: C.grayDark50,
-    stripe2: '#454546', // mix(gray1, grayDark50, 5%)
-    text: C.grayDark,
+    bg: '#e7e7e7',
+    stripe1: '#434344',
+    stripe2: '#454546',
+    text: '#262727',
   },
   error: {
-    bg: C.red15,
-    stripe1: C.red,
-    stripe2: '#e8546a', // mix(gray1, red, 13%)
-    text: C.redDark,
+    bg: '#FFE2DF',
+    stripe1: '#ef4e65',
+    stripe2: '#e8546a',
+    text: '#8c2738',
   },
   warning: {
-    bg: C.red15,
-    stripe1: C.red,
+    bg: '#FFE2DF',
+    stripe1: '#ef4e65',
     stripe2: '#e8546a',
-    text: C.redDark,
+    text: '#8c2738',
   },
   success: {
-    bg: C.green15,
-    stripe1: C.green,
-    stripe2: '#5bbe82', // mix(gray1, green, 13%)
-    text: C.greenDark,
+    bg: '#D8F0DE',
+    stripe1: '#51bb7b',
+    stripe2: '#5bbe82',
+    text: '#267048',
   },
 };
 
@@ -209,7 +211,7 @@ export function Button({
     borderRadius: 500,
     border: 'none',
     background: isActive ? C.greenDark50 : isHover ? C.green : 'transparent',
-    color: disabled ? C.gray75 : (isHover || isActive) ? C.white : C.green,
+    color: disabled ? C.gray75 : (isHover || isActive) ? '#ffffff' : C.green,
     cursor: disabled ? 'not-allowed' : 'pointer',
     transition: 'transform 0.1s ease, background 0.1s ease, color 0.1s ease',
     transform: isActive ? 'scale(0.98)' : 'none',
@@ -286,7 +288,7 @@ export function PrimaryButton({
     borderRadius: 500,
     border: 'none',
     background: disabled ? C.gray75 : isActive ? C.greenDark50 : isHover ? C.green : C.white,
-    color: disabled ? C.gray : (isHover || isActive) ? C.white : C.grayDark,
+    color: disabled ? C.gray : (isHover || isActive) ? '#ffffff' : C.grayDark,
     cursor: disabled ? 'not-allowed' : 'pointer',
     transition: 'transform 0.1s ease, background 0.1s ease, color 0.1s ease',
     transform: isActive ? 'scale(0.98)' : 'none',
@@ -683,7 +685,7 @@ export function Checkbox({
           <svg width="12" height="10" viewBox="0 0 12 10" fill="none">
             <path
               d="M1 5.5L4 8.5L11 1.5"
-              stroke={C.white}
+              stroke="#ffffff"
               strokeWidth="2"
               strokeLinecap="round"
               strokeLinejoin="round"
@@ -799,7 +801,7 @@ export function FlySelect({
     background: C.grayDark,
     border: `1px solid ${C.grayDark50}`,
     borderRadius: 4,
-    boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+    boxShadow: '0 4px 12px var(--cws-shadow)',
     zIndex: 1000,
     maxHeight: 220,
     overflowY: 'auto' as const,

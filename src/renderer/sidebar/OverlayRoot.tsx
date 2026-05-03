@@ -61,9 +61,7 @@ export function mountOverlay(opts: OverlayOptions): OverlayHandle {
     zIndex: '50',
     display: 'none',
     overflow: 'auto',
-    // Main content surface color for Local's dark theme. Elevated
-    // UI on top (cards, inner sidebars, etc.) uses #262727.
-    background: '#303031',
+    background: 'var(--cws-bg-app)',
   } as Partial<CSSStyleDeclaration>);
   document.body.appendChild(host);
 

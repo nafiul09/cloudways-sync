@@ -98,7 +98,7 @@ function ConnectionPill({
   return (
     <div style={styles.connPill}>
       <span style={styles.connDot} aria-hidden />
-      <Text size="caption" style={{ color: 'rgba(255,255,255,0.85)' }}>
+      <Text size="caption" style={{ color: 'var(--cws-text-default)' }}>
         Connected as <MaskedEmail email={status.email} bold />
       </Text>
       <span style={styles.connDivider} aria-hidden />
@@ -145,7 +145,7 @@ const CW_LOGO = (
 
 const LOGIN_CSS = `
   .cws-login-card {
-    background: #262727;
+    background: var(--cws-bg-surface);
     border-radius: 8px;
     padding: 32px 32px 28px;
     width: 100%;
@@ -242,7 +242,7 @@ function DisconnectedView({
       </div>
 
       <div className="cws-login-hint">
-        <Text size="caption" style={{ opacity: 0.5, display: 'block' }}>
+        <Text size="caption" style={{ color: 'var(--cws-text-tertiary)', display: 'block' }}>
           Find your API key in Cloudways → Account → API Keys.
         </Text>
         <TextButton
@@ -293,7 +293,7 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     gap: 10,
     flexShrink: 0,
-    background: '#262727',
+    background: 'var(--cws-bg-surface)',
     borderRadius: 6,
     padding: '8px 14px',
     marginBottom: 2,
@@ -308,13 +308,13 @@ const styles: Record<string, React.CSSProperties> = {
   connDivider: {
     width: 1,
     height: 12,
-    background: 'rgba(255,255,255,0.18)',
+    background: 'var(--cws-border-default)',
   },
   connDisconnect: {
     background: 'transparent',
     border: 'none',
     padding: 0,
-    color: '#ef4e65',
+    color: 'var(--cws-red)',
     fontSize: 12,
     fontWeight: 600,
     fontFamily: 'inherit',
@@ -326,7 +326,7 @@ const styles: Record<string, React.CSSProperties> = {
   headerSub: {
     display: 'block',
     marginTop: 6,
-    opacity: 0.7,
+    color: 'var(--cws-text-secondary)',
   },
   body: {
     flex: 1,
@@ -355,7 +355,7 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 5,
     fontSize: 13,
     fontWeight: 600,
-    color: '#e0dede',
+    color: 'var(--cws-text-default)',
   },
   center: {
     display: 'flex',
@@ -386,7 +386,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'block',
     textAlign: 'center',
     marginTop: 6,
-    opacity: 0.5,
+    color: 'var(--cws-text-tertiary)',
     fontSize: 12.5,
     lineHeight: 1.55,
     maxWidth: 300,

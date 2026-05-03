@@ -15,6 +15,7 @@ import { startSiteListIcons } from './sidebar/injectSiteListIcons';
 import { mountSyncModal, openWizard } from './SyncModal';
 import { injectFooterButtons } from './footer/injectFooterButtons';
 import { GlobalDashboard } from './screens/GlobalDashboard';
+import { injectThemeStylesheet } from './theme/themeVars';
 
 // Local's Add-ons detail page crashes for non-marketplace addons because
 // the GraphQL query returns null and Local calls .toString() on undefined.
@@ -57,7 +58,7 @@ function patchAddonCardLinks(): void {
       (sub as any).__cws_patched = true;
       const html = sub.innerHTML.replace(
         'nafiul09',
-        `<a style="color:#51bb7b;cursor:pointer;text-decoration:none" data-cws-author>nafiul09</a>`,
+        `<a style="color:var(--cws-accent);cursor:pointer;text-decoration:none" data-cws-author>nafiul09</a>`,
       );
       sub.innerHTML = html;
       const link = sub.querySelector('[data-cws-author]');
@@ -72,6 +73,7 @@ function patchAddonCardLinks(): void {
 }
 
 export default function register(context: AddonRendererContext): void {
+  injectThemeStylesheet();
   patchAddonCardLinks();
   registerHooks(context);
 
@@ -95,6 +97,17 @@ export default function register(context: AddonRendererContext): void {
         }
       },
       onDeactivate: () => overlay.hide(),
+    });
+
+    // Auto-close the overlay when Local navigates via hash (e.g.
+    // opening Preferences from the hamburger menu). The sidebar click
+    // handler covers sidebar nav, but hash routing can also be
+    // triggered by menus or keyboard shortcuts.
+    window.addEventListener('hashchange', () => {
+      if (overlay.visible) {
+        overlay.hide();
+        nav.setActive(false);
+      }
     });
   } catch (err) {
     // eslint-disable-next-line no-console

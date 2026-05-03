@@ -276,19 +276,19 @@ function Stepper({
         const isPast = i < currentIndex;
         const isCurrent = i === currentIndex;
         const dotBg = isPast
-          ? '#51bb7b'
+          ? 'var(--cws-accent)'
           : isCurrent
-            ? (isError ? '#e25151' : '#51bb7b')
+            ? (isError ? '#e25151' : 'var(--cws-accent)')
             : 'transparent';
         const dotBorder = isPast || isCurrent
-          ? (isError && isCurrent ? '#e25151' : '#51bb7b')
-          : 'rgba(255,255,255,0.2)';
-        const dotColor = isPast || isCurrent ? '#fff' : 'rgba(255,255,255,0.4)';
+          ? (isError && isCurrent ? '#e25151' : 'var(--cws-accent)')
+          : 'var(--cws-border-subtle)';
+        const dotColor = isPast || isCurrent ? '#fff' : 'var(--cws-text-tertiary)';
         const labelColor = isCurrent
-          ? 'rgba(255,255,255,0.95)'
+          ? 'var(--cws-text-primary)'
           : isPast
-            ? 'rgba(255,255,255,0.7)'
-            : 'rgba(255,255,255,0.4)';
+            ? 'var(--cws-text-secondary)'
+            : 'var(--cws-text-tertiary)';
         return (
           <React.Fragment key={i}>
             <div style={stepperStyles.step}>
@@ -310,7 +310,7 @@ function Stepper({
               <div
                 style={{
                   ...stepperStyles.connector,
-                  background: i < currentIndex ? '#51bb7b' : 'rgba(255,255,255,0.15)',
+                  background: i < currentIndex ? 'var(--cws-accent)' : 'var(--cws-spinner-track)',
                 }}
               />
             )}
@@ -362,15 +362,15 @@ function SetupPhase({ ctx }: { ctx: WizardContext }): React.ReactElement {
           dangerouslySetInnerHTML={{ __html: WARN_ICON_SVG }}
         />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ color: 'rgba(255,255,255,0.95)', fontWeight: 600, fontSize: 14, marginBottom: 4 }}>
+          <div style={{ color: 'var(--cws-text-primary)', fontWeight: 600, fontSize: 14, marginBottom: 4 }}>
             {warningTitle}
           </div>
-          <div style={{ color: 'rgba(255,255,255,0.65)', fontSize: 13, lineHeight: 1.5 }}>
+          <div style={{ color: 'var(--cws-text-secondary)', fontSize: 13, lineHeight: 1.5 }}>
             {warningBody}
           </div>
           {ctx.remoteUrl && (
-            <div style={{ color: 'rgba(255,255,255,0.5)', fontSize: 12, marginTop: 8 }}>
-              Target: <span style={{ color: 'rgba(255,255,255,0.8)', fontWeight: 600 }}>{ctx.remoteUrl}</span>
+            <div style={{ color: 'var(--cws-text-tertiary)', fontSize: 12, marginTop: 8 }}>
+              Target: <span style={{ color: 'var(--cws-text-default)', fontWeight: 600 }}>{ctx.remoteUrl}</span>
             </div>
           )}
         </div>
@@ -550,10 +550,10 @@ function PostPushActions({ undoRecordId, appLabel }: { undoRecordId: string; app
       </div>
       <div style={{ marginTop: 24, marginBottom: 22 }}>
         <div style={{ marginBottom: 14 }}>
-          <div style={{ color: 'rgba(255,255,255,0.95)', fontSize: 17, fontWeight: 700, letterSpacing: 0.1 }}>
+          <div style={{ color: 'var(--cws-text-primary)', fontSize: 17, fontWeight: 700, letterSpacing: 0.1 }}>
             Verify and finalize
           </div>
-          <div style={{ color: 'rgba(255,255,255,0.55)', fontSize: 12, marginTop: 4 }}>
+          <div style={{ color: 'var(--cws-text-tertiary)', fontSize: 12, marginTop: 4 }}>
             Complete these steps before closing the wizard.
           </div>
         </div>
@@ -573,8 +573,8 @@ function PostPushActions({ undoRecordId, appLabel }: { undoRecordId: string; app
                   width: 26,
                   height: 26,
                   borderRadius: '50%',
-                  background: 'rgba(81,187,123,0.15)',
-                  color: '#51bb7b',
+                  background: 'var(--cws-accent-muted)',
+                  color: 'var(--cws-accent)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -586,10 +586,10 @@ function PostPushActions({ undoRecordId, appLabel }: { undoRecordId: string; app
                 {i + 1}
               </div>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ color: 'rgba(255,255,255,0.95)', fontSize: 14, fontWeight: 600, marginBottom: 3 }}>
+                <div style={{ color: 'var(--cws-text-primary)', fontSize: 14, fontWeight: 600, marginBottom: 3 }}>
                   {item.title}
                 </div>
-                <div style={{ color: 'rgba(255,255,255,0.6)', fontSize: 12.5, lineHeight: 1.55 }}>
+                <div style={{ color: 'var(--cws-text-secondary)', fontSize: 12.5, lineHeight: 1.55 }}>
                   {item.body}
                 </div>
               </div>
@@ -884,7 +884,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    background: 'rgba(0, 0, 0, 0.7)',
+    background: 'var(--cws-bg-overlay)',
     backdropFilter: 'blur(3px)',
   },
   stack: {
@@ -898,11 +898,11 @@ const styles: Record<string, React.CSSProperties> = {
   modal: {
     width: '100%',
     boxSizing: 'border-box' as const,
-    background: '#1e1f1f',
+    background: 'var(--cws-bg-modal)',
     borderRadius: 12,
-    border: '1px solid rgba(255,255,255,0.1)',
+    border: '1px solid var(--cws-border-subtle)',
     padding: '28px 32px',
-    boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+    boxShadow: '0 20px 60px var(--cws-shadow)',
   },
   header: {
     display: 'flex',
@@ -928,7 +928,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   stepLabel: {
     fontSize: 13,
-    color: 'rgba(255,255,255,0.85)',
+    color: 'var(--cws-text-default)',
     flex: 1,
     overflow: 'hidden' as const,
     textOverflow: 'ellipsis' as const,
@@ -937,21 +937,21 @@ const styles: Record<string, React.CSSProperties> = {
   percent: {
     fontSize: 12,
     fontWeight: 600,
-    color: '#51bb7b',
+    color: 'var(--cws-accent)',
     fontVariantNumeric: 'tabular-nums' as const,
     flexShrink: 0,
   },
   progressTrack: {
     height: 8,
     borderRadius: 0,
-    background: 'rgba(255,255,255,0.06)',
-    border: '1px solid rgba(255,255,255,0.08)',
+    background: 'var(--cws-progress-track)',
+    border: '1px solid var(--cws-border-subtle)',
     overflow: 'hidden',
     marginBottom: 8,
   },
   progressFill: {
     height: '100%',
-    background: 'linear-gradient(90deg, #51bb7b 0%, #74d79a 100%)',
+    background: 'linear-gradient(90deg, var(--cws-accent) 0%, #74d79a 100%)',
     transition: 'width 0.3s ease',
   },
   infoRow: {
@@ -963,7 +963,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   detail: {
     fontSize: 11,
-    color: 'rgba(255,255,255,0.45)',
+    color: 'var(--cws-text-tertiary)',
     flex: 1,
     overflow: 'hidden' as const,
     textOverflow: 'ellipsis' as const,
@@ -971,20 +971,20 @@ const styles: Record<string, React.CSSProperties> = {
   },
   detailOnly: {
     fontSize: 11,
-    color: 'rgba(255,255,255,0.45)',
+    color: 'var(--cws-text-tertiary)',
     marginTop: 4,
     marginLeft: 26,
     lineHeight: 1.5,
   },
   bytesText: {
     fontSize: 11,
-    color: 'rgba(255,255,255,0.7)',
+    color: 'var(--cws-text-secondary)',
     fontVariantNumeric: 'tabular-nums' as const,
     flexShrink: 0,
   },
   outsideWarning: {
     fontSize: 11,
-    color: 'rgba(255,255,255,0.5)',
+    color: 'var(--cws-text-tertiary)',
     textAlign: 'center' as const,
     fontStyle: 'italic',
     padding: '2px 12px',

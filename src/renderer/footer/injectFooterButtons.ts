@@ -84,8 +84,8 @@ const STYLES = `
     transform: scale(0.98);
   }
   .cws-fb-btn:disabled {
-    color: #9f9c9c;
-    border-color: #9f9c9c;
+    color: var(--cws-text-tertiary);
+    border-color: var(--cws-text-tertiary);
     background: transparent;
     cursor: not-allowed !important;
   }
