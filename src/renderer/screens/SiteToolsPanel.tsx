@@ -15,6 +15,7 @@ import { showSyncModal, dismissSyncModal, failSyncModal, onPostPushAction, openW
 import type { WizardContext } from '../SyncModal';
 import { MaskedEmail } from '../components/MaskedEmail';
 import { LinkViaSftpDialog } from './LinkViaSftpDialog';
+import { UpdateBanner } from '../updater/UpdateBanner';
 import type {
   ApiSiteMapping,
   AppDetail,
@@ -258,6 +259,7 @@ export function SiteToolsPanel({ site }: { site: Site }): React.ReactElement {
   return (
     <div style={styles.wrap}>
       <style>{CWS_CSS}{LOCAL_FLY_SELECT_CSS}</style>
+      <UpdateBanner />
       <header style={styles.header}>
         <Title size="l" tag="h1">
           Cloudways Sync

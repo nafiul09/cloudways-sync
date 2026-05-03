@@ -47,9 +47,42 @@ export class UpdateService {
 
   isSymlinkedInstall(): boolean {
     try {
-      return fs.lstatSync(this.addonDir).isSymbolicLink();
+      // Check the resolved addonDir itself.
+      if (fs.lstatSync(this.addonDir).isSymbolicLink()) return true;
+      // Also check the canonical Local addons path — the symlink lives
+      // there, not at the resolved target. Without this check, `npm run
+      // link` dev installs would pass the guard and get overwritten.
+      const localAddonsDir = this.getLocalAddonsPath();
+      if (localAddonsDir) {
+        const addonLink = path.join(localAddonsDir, ADDON_NAME);
+        try {
+          if (fs.lstatSync(addonLink).isSymbolicLink()) return true;
+        } catch { /* doesn't exist — not a linked install */ }
+      }
+      // Also check for telltale dev-install markers (.git dir, src/ dir)
+      // as a final safety net.
+      if (fs.existsSync(path.join(this.addonDir, '.git'))) return true;
+      if (fs.existsSync(path.join(this.addonDir, 'src'))) return true;
+      return false;
     } catch {
       return false;
+    }
+  }
+
+  private getLocalAddonsPath(): string | null {
+    try {
+      const home = process.env.HOME ?? process.env.USERPROFILE ?? '';
+      if (process.platform === 'darwin') {
+        return path.join(home, 'Library', 'Application Support', 'Local', 'addons');
+      } else if (process.platform === 'win32') {
+        const appData = process.env.APPDATA ?? path.join(home, 'AppData', 'Roaming');
+        return path.join(appData, 'Local', 'addons');
+      }
+      // Linux
+      const configHome = process.env.XDG_CONFIG_HOME ?? path.join(home, '.config');
+      return path.join(configHome, 'Local', 'addons');
+    } catch {
+      return null;
     }
   }
 
@@ -249,19 +282,19 @@ export class UpdateService {
   }
 }
 
-/** Bootstrap the updater: cleanup, skip if dev, check in background. */
+/** Bootstrap the updater and check for updates in background. */
 export function bootstrapUpdater(opts: UpdateServiceOpts): UpdateService {
   const updater = new UpdateService(opts);
 
   // Fire-and-forget startup tasks
   updater.cleanupBackup().catch(() => undefined);
 
-  if (!updater.isSymlinkedInstall()) {
-    updater.checkForUpdate().catch((err) => {
-      // eslint-disable-next-line no-console
-      console.warn('[Cloudways Sync] update check failed:', err);
-    });
-  }
+  // Always check for updates (show the banner). The symlink guard
+  // only blocks the actual install to protect dev source repos.
+  updater.checkForUpdate().catch((err) => {
+    // eslint-disable-next-line no-console
+    console.warn('[Cloudways Sync] update check failed:', err);
+  });
 
   return updater;
 }
