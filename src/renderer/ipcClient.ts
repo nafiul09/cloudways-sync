@@ -51,6 +51,12 @@ import {
   type DismissUndoResponse,
   type UndoPushRequest,
   type UndoPushResponse,
+  type CheckUpdateResponse,
+  type InstallUpdateRequest,
+  type InstallUpdateResponse,
+  type UpdateAvailableEvent,
+  type UpdateProgressEvent,
+  type UpdateInstalledEvent,
 } from '../shared/ipcTypes';
 
 export class IpcCallError extends Error {
@@ -98,6 +104,8 @@ export const ipcClient = {
   detectBreeze: (req: DetectBreezeRequest) => invoke<DetectBreezeResponse>(CHANNELS.DETECT_BREEZE, req),
   probeSftp: (req: ProbeSftpRequest) => invoke<ProbeSftpResponse>(CHANNELS.PROBE_SFTP, req),
   linkViaSftp: (req: LinkViaSftpRequest) => invoke<LinkViaSftpResponse>(CHANNELS.LINK_VIA_SFTP, req),
+  checkUpdate: () => invoke<CheckUpdateResponse>(CHANNELS.CHECK_UPDATE, {}),
+  installUpdate: (req: InstallUpdateRequest) => invoke<InstallUpdateResponse>(CHANNELS.INSTALL_UPDATE, req),
 };
 
 // --- Streaming job events ----------------------------------------------
@@ -147,4 +155,19 @@ export function subscribeJobProgress(handler: (event: JobProgressEvent) => void)
 /** Subscribe to the terminal job-done event. Returns an unsubscribe fn. */
 export function subscribeJobDone(handler: (event: JobDoneEvent) => void): () => void {
   return subscribe<JobDoneEvent>(CHANNELS.JOB_DONE, handler);
+}
+
+/** Subscribe to update-available events. Returns an unsubscribe fn. */
+export function subscribeUpdateAvailable(handler: (event: UpdateAvailableEvent) => void): () => void {
+  return subscribe<UpdateAvailableEvent>(CHANNELS.UPDATE_AVAILABLE, handler);
+}
+
+/** Subscribe to update download/extract progress. Returns an unsubscribe fn. */
+export function subscribeUpdateProgress(handler: (event: UpdateProgressEvent) => void): () => void {
+  return subscribe<UpdateProgressEvent>(CHANNELS.UPDATE_PROGRESS, handler);
+}
+
+/** Subscribe to update-installed event. Returns an unsubscribe fn. */
+export function subscribeUpdateInstalled(handler: (event: UpdateInstalledEvent) => void): () => void {
+  return subscribe<UpdateInstalledEvent>(CHANNELS.UPDATE_INSTALLED, handler);
 }
