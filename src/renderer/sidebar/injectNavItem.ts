@@ -19,6 +19,8 @@ export type SidebarInjectionHandle = {
   element: HTMLElement;
   /** Mark the icon as visually active (like a selected sidebar item). */
   setActive: (active: boolean) => void;
+  /** Show/hide a small notification dot on the icon (e.g. update available). */
+  setBadge: (visible: boolean) => void;
   dispose: () => void;
 };
 
@@ -144,6 +146,9 @@ export function injectNavItem(opts: InjectNavItemOptions): SidebarInjectionHandl
     setActive(active: boolean) {
       handle?.setActive(active);
     },
+    setBadge(visible: boolean) {
+      handle?.setBadge(visible);
+    },
     dispose() {
       disposed = true;
       observer?.disconnect();
@@ -199,10 +204,30 @@ function doInject(opts: InjectNavItemOptions): SidebarInjectionHandle | null {
     opts.onClick();
   });
 
-  // Replace icon SVG.
+  // Replace icon SVG and add notification badge dot.
   const oldSvg = cloneLink.querySelector('svg');
   if (oldSvg) {
     oldSvg.outerHTML = opts.iconSvg;
+  }
+
+  const newSvg = cloneLink.querySelector('svg');
+  let badgeDot: HTMLElement | null = null;
+  if (newSvg) {
+    const svgParent = newSvg.parentElement;
+    if (svgParent) {
+      svgParent.style.position = 'relative';
+    }
+    badgeDot = document.createElement('span');
+    badgeDot.setAttribute('data-cws-badge', 'true');
+    badgeDot.style.cssText =
+      'display:none;position:absolute;top:4px;right:4px;width:12px;height:12px;' +
+      'border-radius:50%;background:#51bb7b;border:2px solid var(--cws-bg-surface);' +
+      'pointer-events:none;z-index:1;';
+    if (svgParent) {
+      svgParent.appendChild(badgeDot);
+    } else {
+      cloneLink.appendChild(badgeDot);
+    }
   }
 
   // Insert before anchor element, or append to end.
@@ -253,9 +278,14 @@ function doInject(opts: InjectNavItemOptions): SidebarInjectionHandle | null {
     }
   };
 
+  const setBadge = (visible: boolean) => {
+    if (badgeDot) badgeDot.style.display = visible ? 'block' : 'none';
+  };
+
   return {
     element: clone,
     setActive,
+    setBadge,
     dispose: () => {
       clone.remove();
     },

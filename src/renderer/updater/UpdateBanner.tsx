@@ -1,5 +1,5 @@
-// Update notification banner shown at the top of GlobalDashboard when
-// a newer version is available on GitHub.
+// Update notification banner shown at the top of GlobalDashboard
+// and SiteToolsPanel when a newer version is available on GitHub.
 
 import React, { useEffect, useState } from 'react';
 import { Banner, Button, TextButton } from '../components/ui';
@@ -22,7 +22,6 @@ export function UpdateBanner(): React.ReactElement | null {
     unsubs.push(
       subscribeUpdateAvailable((event: UpdateAvailableEvent) => {
         setState((prev) => {
-          // Don't overwrite downloading/installed states
           if (prev.kind === 'downloading' || prev.kind === 'installed') return prev;
           return { kind: 'available', version: event.version, htmlUrl: event.htmlUrl, tgzUrl: event.tgzUrl };
         });
@@ -44,6 +43,18 @@ export function UpdateBanner(): React.ReactElement | null {
         setState({ kind: 'installed', version: event.version });
       }),
     );
+
+    // The UPDATE_AVAILABLE event may have fired before this component
+    // mounted (e.g. SiteToolsPanel opens after startup). Poll the main
+    // process for the cached result so we don't miss it.
+    ipcClient.checkUpdate().then((res) => {
+      if (res.available && res.version) {
+        setState((prev) => {
+          if (prev.kind !== 'idle') return prev;
+          return { kind: 'available', version: res.version!, htmlUrl: res.htmlUrl, tgzUrl: res.tgzUrl };
+        });
+      }
+    }).catch(() => { /* non-fatal */ });
 
     return () => unsubs.forEach((fn) => fn());
   }, []);
@@ -70,7 +81,7 @@ export function UpdateBanner(): React.ReactElement | null {
 
   if (state.kind === 'available') {
     return (
-      <div style={{ marginBottom: 12 }}>
+      <div style={styles.wrap}>
         <Banner variant="success">
           <div style={styles.row}>
             <span>
@@ -99,7 +110,7 @@ export function UpdateBanner(): React.ReactElement | null {
       ? Math.round((state.bytesTransferred / state.totalBytes) * 100)
       : null;
     return (
-      <div style={{ marginBottom: 12 }}>
+      <div style={styles.wrap}>
         <Banner variant="success">
           <div style={styles.row}>
             <span>
@@ -118,7 +129,7 @@ export function UpdateBanner(): React.ReactElement | null {
 
   if (state.kind === 'installed') {
     return (
-      <div style={{ marginBottom: 12 }}>
+      <div style={styles.wrap}>
         <Banner variant="success">
           <span>
             Update to <strong>v{state.version}</strong> installed! Restart Local WP to activate.
@@ -130,7 +141,7 @@ export function UpdateBanner(): React.ReactElement | null {
 
   if (state.kind === 'error') {
     return (
-      <div style={{ marginBottom: 12 }}>
+      <div style={styles.wrap}>
         <Banner variant="error">
           <div style={styles.row}>
             <span>Update failed: {state.message}</span>
@@ -149,6 +160,9 @@ export function UpdateBanner(): React.ReactElement | null {
 }
 
 const styles: Record<string, React.CSSProperties> = {
+  wrap: {
+    marginBottom: 4,
+  },
   row: {
     display: 'flex',
     alignItems: 'center',

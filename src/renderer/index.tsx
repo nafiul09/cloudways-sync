@@ -16,6 +16,7 @@ import { mountSyncModal, openWizard } from './SyncModal';
 import { injectFooterButtons } from './footer/injectFooterButtons';
 import { GlobalDashboard } from './screens/GlobalDashboard';
 import { injectThemeStylesheet } from './theme/themeVars';
+import { ipcClient, subscribeUpdateAvailable } from './ipcClient';
 
 // Local's Add-ons detail page crashes for non-marketplace addons because
 // the GraphQL query returns null and Local calls .toString() on undefined.
@@ -109,6 +110,15 @@ export default function register(context: AddonRendererContext): void {
         nav.setActive(false);
       }
     });
+
+    // Show notification badge on sidebar icon when an update is available.
+    subscribeUpdateAvailable(() => {
+      nav.setBadge(true);
+    });
+    // Also poll in case the event fired before the sidebar was ready.
+    ipcClient.checkUpdate().then((res) => {
+      if (res.available) nav.setBadge(true);
+    }).catch(() => { /* non-fatal */ });
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn('[Cloudways Sync] sidebar injection failed — using Preferences entry only.', err);
