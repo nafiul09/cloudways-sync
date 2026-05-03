@@ -12,7 +12,8 @@ import { injectNavItem } from './sidebar/injectNavItem';
 import { mountOverlay } from './sidebar/OverlayRoot';
 import { CLOUDWAYSSYNC_ICON_SVG } from './sidebar/icon';
 import { startSiteListIcons } from './sidebar/injectSiteListIcons';
-import { mountSyncModal } from './SyncModal';
+import { mountSyncModal, openWizard } from './SyncModal';
+import { injectFooterButtons } from './footer/injectFooterButtons';
 import { GlobalDashboard } from './screens/GlobalDashboard';
 
 // Local's Add-ons detail page crashes for non-marketplace addons because
@@ -106,6 +107,20 @@ export default function register(context: AddonRendererContext): void {
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn('[Cloudways Sync] site list icon injection failed.', err);
+  }
+
+  // Inject Push/Pull buttons into the site detail bottom bar.
+  // The footer is self-sufficient: it caches mappings, detects the
+  // current site from the URL, and replaces native pull/push buttons
+  // immediately when that site is linked — independent of which tab
+  // (Overview / Database / Tools / etc.) the user is on.
+  try {
+    injectFooterButtons({
+      onLaunch: (ctx) => openWizard(ctx),
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[Cloudways Sync] footer injection failed.', err);
   }
 
   // Global sync progress modal — persists across navigation.

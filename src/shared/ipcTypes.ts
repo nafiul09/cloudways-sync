@@ -39,6 +39,9 @@ export const CHANNELS = {
   GET_MAPPING_BY_APP: 'cs:getMappingByApp',
   LIST_MAPPINGS: 'cs:listMappings',
 
+  // Local site lookup (for footer buttons that need site context)
+  GET_LOCAL_SITE: 'cs:getLocalSite',
+
   // SFTP-only link mode
   PROBE_SFTP: 'cs:probeSftp',
   LINK_VIA_SFTP: 'cs:linkViaSftp',
@@ -423,6 +426,13 @@ export type GetMappingByAppRequest = { serverId: number; appId: number };
 export type GetMappingByAppResponse = { mapping: SiteMapping | null };
 
 export type ListMappingsResponse = { mappings: SiteMapping[] };
+
+// --- Local site lookup (for footer wizard context) ---
+
+export type GetLocalSiteRequest = { localSiteId: string };
+export type GetLocalSiteResponse = {
+  site: { id: string; url: string; webRootPath: string } | null;
+};
 
 // --- SFTP-only link mode: probe + link ---
 

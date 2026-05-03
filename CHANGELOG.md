@@ -39,6 +39,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SSH_CLOSED`, and `WP_NOT_FOUND` probe failures, walking the user
   to the right Cloudways panel.
 
+## 0.1.1-beta — 2026-05-03
+
+Second release. Major UI overhaul, push domain-rewrite bugfix, wizard
+modal redesign, and fleet browser improvements for a cleaner, more
+polished experience.
+
+### Fixed
+
+- **Push domain rewrite** — `wp search-replace` now correctly rewrites
+  the primary URL after push. Previously the rewrite could silently
+  skip tables or fail on non-standard DB prefixes.
+
+### Changed
+
+#### Sync wizard modal
+- Full wizard redesign with a **phase stepper** at the top (numbered
+  dots with connectors showing progress through Confirm → Configure →
+  Running → Review/Done).
+- **Side-by-side action buttons** (`[Cancel] [Continue]`,
+  `[Back] [Start Push/Pull]`) replace the old stacked layout.
+- **Amber safety warning** with left-accent bar for both push and
+  pull confirm phases (previously inconsistent styling).
+- Post-push Review phase: **numbered checklist** (Purge cache → Verify
+  site → Confirm or Undo) replaces the old plain-text instructions.
+- **Escape blocked** during post-push Review — users must explicitly
+  Confirm or Undo; prevents orphaned server backups.
+- Modal width increased to 560px with refined padding and radius.
+
+#### Site Tools panel (per-site push/pull)
+- **Pull-first, push-second** button order everywhere (panel + footer).
+- Custom directional icons (tray + arrow) for Pull/Push buttons,
+  replacing the old generic cloud icons.
+- **Footer button injection** — pull/push buttons injected alongside
+  Local's native footer buttons using MutationObserver, with
+  `cursor: pointer` forced on all descendants.
+- Extracted `SelectivePanel` into a shared component reused by both
+  the site panel and the wizard modal.
+
+#### Fleet browser (Cloudways API dashboard)
+- **WordPress-only filtering** — only WordPress apps are shown in the
+  server/app browser (non-WP apps are filtered out).
+- Renamed pull action to **"Pull to Local as new site"** for clarity.
+- **"Test WP-CLI over SSH"** button moved to the top action bar with
+  a dismissable result banner (auto-clears on app switch, close
+  button).
+- Fleet pull now opens the **full wizard modal** (Confirm → Configure
+  → Pulling → Done) with the same stepper and include-checkboxes
+  experience as single-site pulls.
+- **SSH/SFTP gate**: when an app has no SSH credentials, the action
+  bar (Pull + Test) and include panel are hidden; only the "Create
+  SSH/SFTP + shell access" notice is shown.
+- Removed the Database section from app details (incorrect/unnecessary
+  data).
+
+#### Global dashboard header
+- Replaced the 80px-tall connected-state banner with a compact
+  **connection pill** in the page header: green dot + masked email +
+  hairline divider + Disconnect link — using the sidebar background
+  color (#262727) for a clean, integrated look.
+- Title + caption always shown in Local's PageTitleBar style.
+
+#### UI polish
+- `cursor: pointer` fixed across all interactive elements (Button
+  component overlay span, footer injected buttons).
+- Cleaner visual hierarchy: removed excessive dividers and borders
+  flagged as "AI-overdone".
+
+### Added
+
+- `IPC: SMOKE_APP` endpoint for WP-CLI-over-SSH connection testing
+  from the fleet browser.
+- `IPC: CREATE_APP_CREDENTIAL` endpoint for provisioning SSH/SFTP
+  credentials on apps that lack them.
+
 ## 0.1.0 — 2026-04-23 (alpha)
 
 First public alpha release. Ships the full Cloudways ↔ Local sync
