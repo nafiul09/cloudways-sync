@@ -95,12 +95,13 @@ export class UpdateService {
   }
 
   async checkForUpdate(): Promise<CheckUpdateResponse> {
-    // Try cached result first
+    // Use cache only when an update is already known — skip the network
+    // round-trip just to re-confirm the same result.  When the cache
+    // says "no update", always re-check so a newly published release is
+    // picked up on every app launch (not delayed up to 6 hours).
     const cached = await this.readCache();
-    if (cached && Date.now() - cached.lastCheckMs < CHECK_INTERVAL_MS) {
-      if (cached.available) {
-        this.emitAvailable(cached);
-      }
+    if (cached && cached.available && Date.now() - cached.lastCheckMs < CHECK_INTERVAL_MS) {
+      this.emitAvailable(cached);
       return {
         available: cached.available,
         version: cached.version,
