@@ -48,7 +48,7 @@ Every release **must** include:
    ```
    ### Requirements
 
-   - Local WP >= 6.7.0
+   - Local WP >= 9.0
    - A Cloudways account with API access (email + API key) or SSH/SFTP credentials
    ```
 
