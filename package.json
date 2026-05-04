@@ -1,7 +1,7 @@
 {
   "name": "local-addon-cloudwayssync",
   "productName": "Cloudways Sync",
-  "version": "0.1.1-beta",
+  "version": "0.1.2-beta",
   "description": "Clone any Cloudways app to Local in one click. Push back when ready.",
   "author": "nafiul09 (https://github.com/nafiul09)",
   "license": "MIT",
@@ -47,7 +47,6 @@
     "unlink": "node scripts/unlink-from-local.mjs",
     "smoke:cloudways": "node scripts/smoke-cloudways.mjs"
   },
-  "dependencies": {},
   "bundledDependencies": [],
   "devDependencies": {
     "@getflywheel/local": "^10.0.0",
@@ -68,6 +67,7 @@
     "react-dom": "^18.3.1",
     "ssh2": "^1.16.0",
     "ssh2-sftp-client": "^11.0.0",
+    "tar": "^7.5.13",
     "typescript": "^5.7.2",
     "undici": "^6.21.0",
     "vite": "^6.0.3",
@@ -78,5 +78,6 @@
   "peerDependencies": {
     "react": "^18.0.0",
     "react-dom": "^18.0.0"
-  }
+  },
+  "bundleDependencies": []
 }
