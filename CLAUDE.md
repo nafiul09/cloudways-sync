@@ -59,7 +59,7 @@ Every release **must** include:
    See [CONTRIBUTING.md](https://github.com/nafiul09/cloudways-sync/blob/main/CONTRIBUTING.md) for the development setup.
    ```
 
-6. **Do NOT include**: git clone instructions, full changelog links, or development commands in the release body.
+6. **Do NOT include**: git clone instructions, full changelog links, development commands (`npm run build`, `npm install`, etc.), or any "Dev" / "Development" / "Getting Started" sections in the release body. The "For developers" section above is **only** a one-line link to CONTRIBUTING.md — nothing else.
 7. **Release status**: Use full release (not pre-release) unless explicitly told otherwise.
 8. **Attach**: The `.tgz` package from `dist/`.
 
