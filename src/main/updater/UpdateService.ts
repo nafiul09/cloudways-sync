@@ -3,14 +3,11 @@
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { request } from 'undici';
 import { fetchLatestRelease, type ReleaseInfo } from './GitHubRelease';
 import { isNewer } from './semver';
+import { extractTarGz } from '../sync/pathUtil';
 import { CHANNELS, type CheckUpdateResponse, type UpdateAvailableEvent, type UpdateProgressEvent, type UpdateInstalledEvent } from '../../shared/ipcTypes';
-
-const execFileAsync = promisify(execFile);
 
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 const CACHE_FILE = 'update-check.json';
@@ -171,7 +168,7 @@ export class UpdateService {
       // Extract
       this.emitProgress({ bytesTransferred: 0, totalBytes: 0, phase: 'extract' });
       await fsp.mkdir(extractDir, { recursive: true });
-      await execFileAsync('tar', ['xzf', tempTgz, '-C', extractDir, '--strip-components=1']);
+      await extractTarGz(tempTgz, extractDir, 1);
 
       // Verify extraction produced a package.json
       const extractedPkg = path.join(extractDir, 'package.json');

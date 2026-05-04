@@ -18,6 +18,7 @@ import { selectedWpContentSubdirs, shouldSkipStep, tarExcludeFlags } from './Sel
 import { pruneRemoteSnapshots, sweepLocalSnapshots, sweepRemoteTempFiles, sweepStaleJobs } from './cleanup';
 import type { PullMetadata, PullPlan, SiteImporter } from './types';
 import type { AppLink } from './AppLink';
+import { extractTarGz } from './pathUtil';
 
 const execFileAsync = promisify(execFile);
 
@@ -183,9 +184,7 @@ export class PullOrchestrator {
           );
 
           this.progress(jobId, 'download-content', 'running', 'Extracting archive…');
-          await execFileAsync('tar', ['xzf', localContentTarGz, '-C', stagingDir], {
-            timeout: 5 * 60 * 1000,
-          });
+          await extractTarGz(localContentTarGz, stagingDir);
         });
       }
 

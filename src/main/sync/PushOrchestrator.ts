@@ -24,6 +24,7 @@ import { pruneRemoteSnapshots, sweepLocalSnapshots, sweepRemoteTempFiles, sweepS
 import type { PullMetadata, PushPlan } from './types';
 import type { UndoLedger } from './UndoLedger';
 import type { AppLink } from './AppLink';
+import { resolvePath, gzipFile, createTarGz } from './pathUtil';
 
 const execFileAsync = promisify(execFile);
 
@@ -106,10 +107,11 @@ export class PushOrchestrator {
             detail: { application: resolved.api.app.application },
           });
         }
-        // Verify local webroot exists
-        const webRootStat = await fs.promises.stat(plan.webRootPath).catch(() => null);
+        // Verify local webroot exists (expand ~ for Windows compatibility)
+        const resolvedWebRoot = resolvePath(plan.webRootPath);
+        const webRootStat = await fs.promises.stat(resolvedWebRoot).catch(() => null);
         if (!webRootStat?.isDirectory()) {
-          throw new RemoteError('SSH_COMMAND_FAILED', `Local web root not found: ${plan.webRootPath}`, {
+          throw new RemoteError('SSH_COMMAND_FAILED', `Local web root not found: ${resolvedWebRoot}`, {
             retriable: false,
           });
         }
@@ -185,11 +187,11 @@ export class PushOrchestrator {
             await this.execLocal('wp', [
               'db', 'export', localSql,
               '--add-drop-table',
-              `--path=${plan.webRootPath}`,
+              `--path=${resolvePath(plan.webRootPath)}`,
             ], { timeout: 10 * 60 * 1000 });
           }
-          // Gzip locally
-          await this.execLocal('gzip', ['-f', localSql], { timeout: 5 * 60 * 1000 });
+          // Gzip locally (using Node.js zlib — no system gzip needed)
+          await gzipFile(localSql);
         });
       }
 
@@ -216,14 +218,15 @@ export class PushOrchestrator {
         this.progress(jobId, 'upload-content', 'skipped');
       } else {
         await this.step(jobId, 'upload-content', async () => {
-          // Create local archive of wp-content
+          // Create local archive of wp-content (using Node.js tar — no system tar needed)
           this.progress(jobId, 'upload-content', 'running', 'Archiving local wp-content…');
-          await this.execLocal('tar', [
-            'czf', localContentTarGz,
-            ...tarExcludeFlagsArray(plan.includes),
-            '-C', plan.webRootPath,
-            'wp-content',
-          ], { timeout: 10 * 60 * 1000 });
+          const resolvedWebRootForTar = resolvePath(plan.webRootPath);
+          await createTarGz(
+            localContentTarGz,
+            resolvedWebRootForTar,
+            ['wp-content'],
+            tarExcludePatternsForIncludes(plan.includes),
+          );
 
           // Reconnect SFTP (may have gone stale during local archiving)
           await sftp?.end();
@@ -647,8 +650,3 @@ async function cleanupRemote(ssh: SshClient | undefined, ...paths: Array<string 
   await ssh.exec(`rm -f ${quoted}`).catch(() => undefined);
 }
 
-/** Return tar exclude flags as an array of args (for local tar via execFileAsync). */
-function tarExcludeFlagsArray(includes: PushPlan['includes']): string[] {
-  const patterns = tarExcludePatternsForIncludes(includes);
-  return patterns.flatMap((p) => ['--exclude', p]);
-}
