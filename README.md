@@ -70,21 +70,34 @@ push" button.
 
 ### API mode
 
-Requires your Cloudways email + API key. You can find it in the
-Cloudways Platform under **My Profile → API Keys**.
+Requires your Cloudways email + API key. To set it up:
+
+1. **Get your API key** — in the Cloudways Platform, click the
+   nine-dot grid icon in the bottom-left corner and select
+   **API → Integrations**, or go directly to
+   `unified.cloudways.com/api`. Create your first API key or
+   regenerate an existing one.
+2. **Whitelist your IP** — for each server you want to use with
+   Cloudways Sync, go to **Servers → (your server) → Security** and
+   add your IP address to the allowlist. If the server blocks all IPs
+   except those on the allowlist, your IP must be added for the
+   add-on to connect.
+3. Enter your Cloudways email and API key in the add-on to link.
 
 ### SFTP mode
 
 Uses per-application SSH/SFTP credentials — useful for team members
 who don't have access to the account's API key. Before connecting:
 
-1. **Whitelist your IP** — in the Cloudways Platform, go to your
-   server's **Security → SSH/SFTP** tab and add your public IP to
+1. **Whitelist your IP** — same as API mode: go to
+   **Servers → (your server) → Security** and add your IP address to
    the allowlist.
-2. **Enable shell access** — go to **Application Settings → General →
-   Application Credentials** and set Shell Access to **Enable**.
-3. Use the SSH/SFTP credentials shown under **Application Settings →
-   SSH/SFTP** (host, username, password) when linking in the add-on.
+2. **Enable shell access** — go to **Application Settings → General**
+   tab, scroll to the bottom, and set Shell Access to **Enable**.
+3. **Get SFTP credentials** — go to your app's **Application Settings**
+   page and use the existing SFTP details or create new ones. Use
+   these credentials (host, username, password) when linking in the
+   add-on.
 
 Open any site's **Tools → Cloudways Sync** tab to link via either mode.
 
