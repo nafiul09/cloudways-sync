@@ -42,6 +42,21 @@ push" button.
 - **Humanized errors** — every failure path has a user-facing message
   with the underlying code exposed for support.
 
+## Requirements
+
+- Local WP >= 9.0
+- A Cloudways account with API access (email + API key) or SSH/SFTP credentials
+
+## Install
+
+1. Download the latest `.tgz` from [Releases](https://github.com/nafiul09/cloudways-sync/releases)
+2. Open Local WP → click **Add-ons** in the sidebar → **Installed**
+3. Click **Install from disk**, select the downloaded `.tgz` file, and open
+4. Restart Local WP completely (Cmd+Q / Alt+F4, then reopen)
+5. Open any site's **Tools** tab → **Cloudways Sync** to get started
+
+![Installation walkthrough](https://github.com/nafiul09/cloudways-sync/releases/download/v0.1.0/cloudways-sync-installation.gif)
+
 ## Linking modes
 
 | Capability | API mode | SFTP mode |
@@ -73,21 +88,6 @@ who don't have access to the account's API key. Before connecting:
    SSH/SFTP** (host, username, password) when linking in the add-on.
 
 Open any site's **Tools → Cloudways Sync** tab to link via either mode.
-
-## Requirements
-
-- Local WP >= 6.7.0
-- A Cloudways account with API access (email + API key) or SSH/SFTP credentials
-
-## Install
-
-1. Download the latest `.tgz` from [Releases](https://github.com/nafiul09/cloudways-sync/releases)
-2. Open Local WP → click **Add-ons** in the sidebar → **Installed**
-3. Click **Install from disk**, select the downloaded `.tgz` file, and open
-4. Restart Local WP completely (Cmd+Q / Alt+F4, then reopen)
-5. Open any site's **Tools** tab → **Cloudways Sync** to get started
-
-![Installation walkthrough](https://github.com/nafiul09/cloudways-sync/releases/download/v0.1.0/cloudways-sync-installation.gif)
 
 ## Development
 
