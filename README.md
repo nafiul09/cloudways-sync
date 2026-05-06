@@ -67,7 +67,6 @@ push" button.
 | Push from Local → Cloudways | ✅ | ✅ |
 | Pull from Cloudways → Local | ✅ | ✅ |
 | Undo last push | ✅ (Cloudways `restoreApp`) | ✅ (re-applies the local-tar snapshot) |
-| Mode B (provision a new Cloudways app from Local) | ✅ | — |
 
 ### API mode
 
@@ -88,6 +87,43 @@ who don't have access to the account's API key. Before connecting:
    SSH/SFTP** (host, username, password) when linking in the add-on.
 
 Open any site's **Tools → Cloudways Sync** tab to link via either mode.
+
+## Pull (Cloudways → Local)
+
+Pull clones a Cloudways app into a Local site. The wizard walks you
+through four stages:
+
+1. **Confirm** — review the source app, target site, and any safety
+   warnings before starting.
+2. **Configure** — choose what to pull: database, uploads, plugins,
+   themes, mu-plugins, languages. Anything unchecked stays untouched
+   locally. In API mode a Cloudways backup is taken automatically
+   before pulling.
+3. **Pulling** — the add-on archives the selected content on the
+   server, downloads it in a single transfer, restores locally, and
+   search-replaces URLs so the site works on your local domain.
+4. **Done** — summary of what was pulled and any next steps.
+
+<!-- TODO: add pull walkthrough GIF -->
+
+## Push (Local → Cloudways)
+
+Push sends your Local site back to the linked Cloudways app. Same
+four-stage wizard, with an extra safety net at the end:
+
+1. **Confirm** — review source and destination, see safety warnings.
+2. **Configure** — choose what to push: database, uploads, plugins,
+   themes, mu-plugins, languages. A pre-push snapshot is taken
+   automatically (Cloudways backup in API mode; tar + DB export in
+   SFTP mode).
+3. **Pushing** — uploads the selected content, restores on the server,
+   and search-replaces URLs to match the live domain.
+4. **Review** — post-push checklist to verify the live site. From here
+   you can **undo** the push with one click (API mode restores via
+   Cloudways; SFTP mode re-applies the snapshot) or **confirm** to
+   finalize.
+
+<!-- TODO: add push walkthrough GIF -->
 
 ## Development
 

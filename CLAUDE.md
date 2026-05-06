@@ -68,3 +68,4 @@ Every release **must** include:
 - Pull-first, push-second button order everywhere
 - Never auto-commit or push — wait for explicit user approval
 - Avoid "AI-overdone" UI: no excessive dividers, borders, or boxy cards inside Local's already-framed panels
+- **No Co-Authored-By** — never add `Co-Authored-By` trailers to commit messages. All commits should appear as the user's work only.
