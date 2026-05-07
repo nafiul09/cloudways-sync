@@ -92,6 +92,40 @@ export class UpdateService {
     await fsp.rm(backupDir, { recursive: true, force: true }).catch(() => undefined);
     await fsp.rm(updateDir, { recursive: true, force: true }).catch(() => undefined);
     await fsp.rm(updateTgz, { force: true }).catch(() => undefined);
+
+    // Also remove duplicate addon directories left by previous installs.
+    await this.removeDuplicateAddons(parentDir);
+  }
+
+  /**
+   * Scan the addons directory for other copies of this addon (e.g.
+   * backup dirs, versioned dirs from "Install from disk") and remove
+   * them so Local doesn't load duplicates.
+   */
+  private async removeDuplicateAddons(addonsDir: string): Promise<void> {
+    try {
+      const canonical = path.basename(this.addonDir);
+      const entries = await fsp.readdir(addonsDir);
+      for (const entry of entries) {
+        if (entry === canonical) continue;
+        // Match our addon name with any suffix (.backup, .update, -0.1.2-beta, etc.)
+        if (!entry.startsWith(ADDON_NAME)) continue;
+        const full = path.join(addonsDir, entry);
+        try {
+          const stat = await fsp.stat(full);
+          if (!stat.isDirectory()) continue;
+          // Verify it's actually our addon by checking for package.json
+          // with our name — don't blindly delete arbitrary directories.
+          const pkgPath = path.join(full, 'package.json');
+          try {
+            const pkg = JSON.parse(await fsp.readFile(pkgPath, 'utf8'));
+            if (pkg.name === ADDON_NAME) {
+              await fsp.rm(full, { recursive: true, force: true });
+            }
+          } catch { /* no valid package.json — skip */ }
+        } catch { /* stat failed — skip */ }
+      }
+    } catch { /* non-fatal */ }
   }
 
   async checkForUpdate(): Promise<CheckUpdateResponse> {
@@ -187,8 +221,14 @@ export class UpdateService {
         throw err;
       }
 
-      // Cleanup temp file (backup kept until next startup)
+      // Cleanup: remove backup and temp file immediately so Local
+      // doesn't discover the backup as a second addon on restart.
+      await fsp.rm(backupDir, { recursive: true, force: true }).catch(() => undefined);
       await fsp.rm(tempTgz, { force: true });
+
+      // Remove any other copies of the addon in the addons directory
+      // (e.g. versioned directories from "Install from disk").
+      await this.removeDuplicateAddons(parentDir);
 
       // Invalidate cache so we don't show "update available" after restart
       const updatedCache: CachedCheck = {
