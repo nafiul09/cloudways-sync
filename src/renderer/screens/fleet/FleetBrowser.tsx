@@ -18,6 +18,7 @@ import {
 } from '../../components/ui';
 import { ipcClient, IpcCallError } from '../../ipcClient';
 import { openWizard } from '../../SyncModal';
+import { openUrl } from '../../openUrl';
 import type {
   AppDetail as AppDetailPayload,
   AppSummary,
@@ -524,7 +525,7 @@ function AppDetailView({
         <Row label="Primary URL">
           {primaryUrl ? (
             <>
-              <TextButton onClick={() => window.open(primaryUrl, '_blank')}>{primaryUrl}</TextButton>
+              <TextButton onClick={() => openUrl(primaryUrl)}>{primaryUrl}</TextButton>
               <CopyButton value={primaryUrl} />
             </>
           ) : (

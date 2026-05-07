@@ -16,6 +16,7 @@ import type { WizardContext } from '../SyncModal';
 import { MaskedEmail } from '../components/MaskedEmail';
 import { LinkViaSftpDialog } from './LinkViaSftpDialog';
 import { UpdateBanner } from '../updater/UpdateBanner';
+import { openUrl } from '../openUrl';
 import type {
   ApiSiteMapping,
   AppDetail,
@@ -479,29 +480,32 @@ function LinkedState({
           <Text style={styles.linkedValue}>{mapping.appLabel}</Text>
           <Text size="caption" style={styles.linkedLabel}>Server</Text>
           <Text style={styles.linkedValue}>{mapping.serverLabel ?? `ID ${mapping.serverId}`}</Text>
-          {mapping.remoteUrl ? (
+          {(mapping.remoteUrl || appDetail?.appFqdn) && (
             <>
               <Text size="caption" style={styles.linkedLabel}>URL</Text>
-              <a
-                href={mapping.remoteUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{ ...styles.linkedValue, color: 'var(--cws-accent)', textDecoration: 'none' }}
-                onClick={(e) => {
-                  e.preventDefault();
-                  try {
-                    // eslint-disable-next-line @typescript-eslint/no-var-requires, global-require
-                    const { shell } = require('electron') as { shell: { openExternal: (url: string) => void } };
-                    shell.openExternal(mapping.remoteUrl);
-                  } catch {
-                    window.open(mapping.remoteUrl, '_blank');
-                  }
-                }}
+              <span
+                role="link"
+                tabIndex={0}
+                style={{ ...styles.linkedValue, color: 'var(--cws-accent)', cursor: 'pointer' }}
+                onClick={() => openUrl(mapping.remoteUrl || `https://${appDetail!.appFqdn}`)}
+                onKeyDown={(e) => { if (e.key === 'Enter') openUrl(mapping.remoteUrl || `https://${appDetail!.appFqdn}`); }}
               >
-                {mapping.remoteUrl}
-              </a>
+                {mapping.remoteUrl || `https://${appDetail!.appFqdn}`}
+              </span>
             </>
-          ) : null}
+          )}
+          {appDetail?.appVersion && (
+            <>
+              <Text size="caption" style={styles.linkedLabel}>WordPress</Text>
+              <Text style={styles.linkedValue}>{appDetail.appVersion}</Text>
+            </>
+          )}
+          {appDetail?.createdAt && (
+            <>
+              <Text size="caption" style={styles.linkedLabel}>Created</Text>
+              <Text style={styles.linkedValue}>{new Date(appDetail.createdAt).toLocaleDateString()}</Text>
+            </>
+          )}
         </div>
       </div>
 
@@ -656,25 +660,15 @@ function SftpLinkedState({
           {mapping.remoteUrl ? (
             <>
               <Text size="caption" style={styles.linkedLabel}>URL</Text>
-              <a
-                href={mapping.remoteUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{ ...styles.linkedValue, color: 'var(--cws-accent)', textDecoration: 'none' }}
-                onClick={(e) => {
-                  e.preventDefault();
-                  const url = mapping.remoteUrl!;
-                  try {
-                    // eslint-disable-next-line @typescript-eslint/no-var-requires, global-require
-                    const { shell } = require('electron') as { shell: { openExternal: (url: string) => void } };
-                    shell.openExternal(url);
-                  } catch {
-                    window.open(url, '_blank');
-                  }
-                }}
+              <span
+                role="link"
+                tabIndex={0}
+                style={{ ...styles.linkedValue, color: 'var(--cws-accent)', cursor: 'pointer' }}
+                onClick={() => openUrl(mapping.remoteUrl!)}
+                onKeyDown={(e) => { if (e.key === 'Enter') openUrl(mapping.remoteUrl!); }}
               >
                 {mapping.remoteUrl}
-              </a>
+              </span>
             </>
           ) : null}
           {mapping.webRoot && (
