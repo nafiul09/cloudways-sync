@@ -101,6 +101,18 @@ who don't have access to the account's API key. Before connecting:
 
 Open any site's **Tools → Cloudways Sync** tab to link via either mode.
 
+## Video walkthrough
+
+Watch the full setup and demo — from installing the add-on and
+connecting your Cloudways account to pulling, pushing, and managing
+your WordPress sites between Local and Cloudways.
+
+[![Cloudways Sync for Local WP — Full Setup & Demo](https://img.youtube.com/vi/m4IzXVql0CY/maxresdefault.jpg)](https://youtu.be/m4IzXVql0CY)
+
+The video covers API and SFTP linking, IP whitelisting, selective sync,
+pre-push safety backups, one-click undo, and how to report issues on
+GitHub.
+
 ## Pull (Cloudways → Local)
 
 Pull clones a Cloudways app into a Local site. The wizard walks you
