@@ -99,8 +99,10 @@ function matchExclude(entryPath: string, pattern: string): boolean {
   const fileName = segments[segments.length - 1] ?? '';
 
   if (pattern.includes('*')) {
-    // Glob pattern — convert to regex and test against each path segment
-    const re = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$');
+    // Glob pattern — convert to regex and test against each path segment.
+    // Escape regex-special chars (especially `.`) before converting `*`.
+    const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp('^' + escaped.replace(/\*/g, '.*') + '$');
     // Test against filename for patterns like *.log
     if (re.test(fileName)) return true;
     // Test against each segment for patterns like backup*

@@ -6,11 +6,12 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import ReactDOM from 'react-dom';
-import { Banner, Button, Checkbox, Text, Title } from './components/ui';
+import { Banner, Button, Checkbox, Spinner, Text, Title } from './components/ui';
 import { SelectivePanel } from './components/SelectivePanel';
 import type { SyncIncludes } from './components/SelectivePanel';
 import { ipcClient, subscribeJobDone, subscribeJobProgress } from './ipcClient';
-import type { JobDoneEvent, JobProgressEvent, PushIncludes, PullIncludes } from '../shared/ipcTypes';
+import { openUrl } from './openUrl';
+import type { HealthCheckResult, JobDoneEvent, JobProgressEvent, PreflightCheckResponse, PushIncludes, PullIncludes } from '../shared/ipcTypes';
 
 // ---- Step labels ----
 
@@ -24,8 +25,10 @@ const PUSH_STEP_LABELS: Record<string, string> = {
   'upload-content': 'Uploading wp-content',
   'remote-db-import': 'Importing DB on server',
   'search-replace': 'Rewriting URLs',
-  'cache-flush': 'Flushing caches',
+  'wp-core-update': 'Updating WordPress core',
   'breeze-reactivate': 'Re-activating Breeze',
+  'cache-flush': 'Flushing caches',
+  'health-check': 'Checking site health',
   cleanup: 'Cleaning up',
 };
 
@@ -92,7 +95,7 @@ type ModalState =
   | { phase: 'config'; ctx: WizardContext }
   | RunningState
   | { phase: 'done'; mode: SyncMode; appLabel: string }
-  | { phase: 'post-push'; appLabel: string; undoRecordId: string }
+  | { phase: 'post-push'; appLabel: string; undoRecordId: string; healthCheck?: HealthCheckResult }
   | { phase: 'error'; mode: SyncMode; appLabel: string; error: string };
 
 // ---- Stepper config ----
@@ -185,8 +188,8 @@ export function dismissSyncModal(): void {
 }
 
 /** Show the post-push modal with undo/confirm actions and cache guidance. */
-export function showPostPushModal(appLabel: string, undoRecordId: string): void {
-  setState({ phase: 'post-push', appLabel, undoRecordId });
+export function showPostPushModal(appLabel: string, undoRecordId: string, healthCheck?: HealthCheckResult): void {
+  setState({ phase: 'post-push', appLabel, undoRecordId, healthCheck });
 }
 
 // ---- Panel notification callback ----
@@ -387,6 +390,108 @@ function SetupPhase({ ctx }: { ctx: WizardContext }): React.ReactElement {
   );
 }
 
+// ---- Preflight version comparison panel ----
+
+function PreflightPanel({ ctx, preflight, onUpgradeWp }: {
+  ctx: WizardContext;
+  preflight: PreflightCheckResponse;
+  onUpgradeWp: () => void;
+}): React.ReactElement {
+  const wpMatch = preflight.localWpVersion && preflight.remoteWpVersion
+    && preflight.localWpVersion === preflight.remoteWpVersion;
+  const phpMatch = preflight.localPhpVersion && preflight.remotePhpVersion
+    && majorMinor(preflight.localPhpVersion) === majorMinor(preflight.remotePhpVersion);
+
+  const wpMismatch = preflight.localWpVersion && preflight.remoteWpVersion
+    && preflight.localWpVersion !== preflight.remoteWpVersion;
+  const phpMismatch = preflight.localPhpVersion && preflight.remotePhpVersion
+    && majorMinor(preflight.localPhpVersion) !== majorMinor(preflight.remotePhpVersion);
+
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <Text style={{ fontWeight: 600, marginBottom: 8, display: 'block' }}>Compatibility check</Text>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <VersionRow
+          label="WordPress"
+          local={preflight.localWpVersion}
+          remote={preflight.remoteWpVersion}
+          match={!!wpMatch}
+        />
+        <VersionRow
+          label="PHP"
+          local={preflight.localPhpVersion}
+          remote={preflight.remotePhpVersion}
+          match={!!phpMatch}
+        />
+      </div>
+      {wpMismatch && (
+        <div style={{ marginTop: 10 }}>
+          <Banner variant="warning">
+            WordPress version mismatch: local {preflight.localWpVersion} vs remote {preflight.remoteWpVersion}.
+            This can cause critical errors after push.
+          </Banner>
+          <Button
+            onClick={onUpgradeWp}
+            style={{ marginTop: 8, width: '100%' }}
+          >
+            Upgrade remote to WordPress {preflight.localWpVersion}
+          </Button>
+        </div>
+      )}
+      {phpMismatch && (
+        <div style={{ marginTop: 10 }}>
+          <Banner variant="warning">
+            PHP version mismatch: local {preflight.localPhpVersion} vs remote {preflight.remotePhpVersion}.
+            Some plugins may not work on the remote server.
+          </Banner>
+          <div style={{ marginTop: 6, fontSize: 12, color: 'var(--cws-text-secondary)' }}>
+            PHP version is a server-level setting on Cloudways.{' '}
+            <span
+              style={{ color: '#51bb7b', cursor: 'pointer', textDecoration: 'underline' }}
+              onClick={() => openUrl('https://platform.cloudways.com/server')}
+            >
+              Open Cloudways Dashboard
+            </span>
+            {' '}to change it under Server Settings &rarr; Packages &rarr; PHP.
+          </div>
+        </div>
+      )}
+      {!wpMismatch && !phpMismatch && (wpMatch || phpMatch) && (
+        <div style={{ marginTop: 8 }}>
+          <Banner variant="success">Versions are compatible. Ready to {ctx.mode}.</Banner>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VersionRow({ label, local, remote, match }: {
+  label: string;
+  local: string | null;
+  remote: string | null;
+  match: boolean;
+}): React.ReactElement {
+  const icon = !local || !remote ? '\u2014' : match ? '\u2705' : '\u26A0\uFE0F';
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+      <span style={{ width: 20, textAlign: 'center' }}>{icon}</span>
+      <span style={{ width: 80, fontWeight: 500 }}>{label}</span>
+      <span style={{ color: 'var(--cws-text-secondary)' }}>
+        Local: <strong>{local ?? 'unknown'}</strong>
+      </span>
+      <span style={{ color: 'var(--cws-text-tertiary)', margin: '0 4px' }}>&rarr;</span>
+      <span style={{ color: 'var(--cws-text-secondary)' }}>
+        Remote: <strong>{remote ?? 'unknown'}</strong>
+      </span>
+    </div>
+  );
+}
+
+function majorMinor(version: string): string {
+  const parts = version.split('.');
+  return parts.length >= 2 ? `${parts[0]}.${parts[1]}` : version;
+}
+
 // ---- Config phase (checkboxes + start button) ----
 
 function ConfigPhase({ ctx }: { ctx: WizardContext }): React.ReactElement {
@@ -395,6 +500,59 @@ function ConfigPhase({ ctx }: { ctx: WizardContext }): React.ReactElement {
   const [includes, setIncludes] = useState<SyncIncludes>({ ...DEFAULT_INCLUDES });
   const [reactivateBreeze, setReactivateBreeze] = useState(true);
   const [busy, setBusy] = useState(false);
+
+  // Preflight state (push only)
+  const [preflight, setPreflight] = useState<PreflightCheckResponse | null>(null);
+  const [preflightLoading, setPreflightLoading] = useState(false);
+  const [preflightError, setPreflightError] = useState<string | null>(null);
+  const [upgrading, setUpgrading] = useState(false);
+
+  useEffect(() => {
+    if (!isPush) return;
+    let cancelled = false;
+    setPreflightLoading(true);
+    setPreflightError(null);
+    ipcClient.preflightCheck({
+      linkMode: ctx.linkMode,
+      serverId: ctx.serverId,
+      appId: ctx.appId,
+      localSiteId: ctx.siteId,
+      webRootPath: ctx.webRootPath,
+    }).then((result) => {
+      if (!cancelled) setPreflight(result);
+    }).catch((err) => {
+      if (!cancelled) setPreflightError(err instanceof Error ? err.message : String(err));
+    }).finally(() => {
+      if (!cancelled) setPreflightLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [isPush, ctx.linkMode, ctx.serverId, ctx.appId, ctx.siteId, ctx.webRootPath]);
+
+  const handleUpgradeWp = async () => {
+    if (!preflight?.localWpVersion) return;
+    setUpgrading(true);
+    try {
+      const result = await ipcClient.upgradeRemoteWp({
+        linkMode: ctx.linkMode,
+        serverId: ctx.serverId,
+        appId: ctx.appId,
+        localSiteId: ctx.siteId,
+        targetVersion: preflight.localWpVersion,
+      });
+      if (result.success) {
+        setPreflight({
+          ...preflight,
+          remoteWpVersion: result.newVersion ?? preflight.localWpVersion,
+        });
+      } else {
+        setPreflightError(`WP upgrade failed: ${result.error ?? 'Unknown error'}`);
+      }
+    } catch (err) {
+      setPreflightError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setUpgrading(false);
+    }
+  };
 
   const handleStart = async () => {
     setBusy(true);
@@ -413,7 +571,7 @@ function ConfigPhase({ ctx }: { ctx: WizardContext }): React.ReactElement {
           includes: includes as PushIncludes,
           reactivateBreeze: ctx.breezeActive ? reactivateBreeze : false,
         });
-        await ipcClient.runJob({ planId: plan.planId });
+        const pushResult = await ipcClient.runJob({ planId: plan.planId });
         // Push succeeded — show post-push modal with undo/confirm
         try {
           const undos = await ipcClient.listUndo();
@@ -427,7 +585,7 @@ function ConfigPhase({ ctx }: { ctx: WizardContext }): React.ReactElement {
           );
           if (latest) {
             postPushActionCallback?.(); // clear any stale panel undo state
-            showPostPushModal(ctx.appLabel, latest.id);
+            showPostPushModal(ctx.appLabel, latest.id, pushResult.healthCheck);
           }
         } catch { /* non-fatal — modal will show generic done */ }
       } else {
@@ -458,6 +616,28 @@ function ConfigPhase({ ctx }: { ctx: WizardContext }): React.ReactElement {
           </Banner>
         </div>
       )}
+      {/* Preflight compatibility check (push only) */}
+      {isPush && preflightLoading && (
+        <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Spinner style={{ width: 16, height: 16 }} />
+          <Text size="caption">Checking compatibility with remote server{upgrading ? ' (upgrading WordPress\u2026)' : '\u2026'}</Text>
+        </div>
+      )}
+      {isPush && preflightError && (
+        <div style={{ marginBottom: 16 }}>
+          <Banner variant="warning">Could not check compatibility: {preflightError}</Banner>
+        </div>
+      )}
+      {isPush && preflight && !preflightLoading && (
+        upgrading ? (
+          <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Spinner style={{ width: 16, height: 16 }} />
+            <Text size="caption">Upgrading WordPress on remote server{'\u2026'}</Text>
+          </div>
+        ) : (
+          <PreflightPanel ctx={ctx} preflight={preflight} onUpgradeWp={handleUpgradeWp} />
+        )
+      )}
       <SelectivePanel
         heading={isPush ? 'Include in push' : 'Include in pull'}
         includes={includes}
@@ -477,10 +657,10 @@ function ConfigPhase({ ctx }: { ctx: WizardContext }): React.ReactElement {
         </div>
       )}
       <div style={{ display: 'flex', gap: 10 }}>
-        <Button onClick={() => setState({ phase: 'setup', ctx })} disabled={busy} style={{ flex: 1 }}>
+        <Button onClick={() => setState({ phase: 'setup', ctx })} disabled={busy || upgrading || preflightLoading} style={{ flex: 1 }}>
           Back
         </Button>
-        <Button onClick={handleStart} disabled={busy} style={{ flex: 1 }}>
+        <Button onClick={handleStart} disabled={busy || upgrading || (isPush && preflightLoading)} style={{ flex: 1 }}>
           {busy ? 'Starting\u2026' : isPush ? 'Start Push' : 'Start Pull'}
         </Button>
       </div>
@@ -490,7 +670,7 @@ function ConfigPhase({ ctx }: { ctx: WizardContext }): React.ReactElement {
 
 // ---- Post-push actions component ----
 
-function PostPushActions({ undoRecordId, appLabel }: { undoRecordId: string; appLabel: string }): React.ReactElement {
+function PostPushActions({ undoRecordId, appLabel, healthCheck }: { undoRecordId: string; appLabel: string; healthCheck?: HealthCheckResult }): React.ReactElement {
   const [busy, setBusy] = useState(false);
 
   const handleConfirm = async () => {
@@ -548,6 +728,24 @@ function PostPushActions({ undoRecordId, appLabel }: { undoRecordId: string; app
       <div style={styles.bannerSlot}>
         <Banner variant="success">Successfully pushed to Cloudways.</Banner>
       </div>
+      {healthCheck && !healthCheck.coreOk && (
+        <div style={{ marginTop: 8 }}>
+          <Banner variant="error">
+            WordPress core failed to load on the remote server.
+            {healthCheck.errorDetail ? ` Error: ${healthCheck.errorDetail}` : ''}
+            {' '}Consider undoing this push.
+          </Banner>
+        </div>
+      )}
+      {healthCheck && healthCheck.coreOk && !healthCheck.withPluginsOk && (
+        <div style={{ marginTop: 8 }}>
+          <Banner variant="warning">
+            Some plugins may not be loading correctly on the remote server.
+            {healthCheck.errorDetail ? ` Error: ${healthCheck.errorDetail}` : ''}
+            {' '}Check the remote PHP version and plugin requirements.
+          </Banner>
+        </div>
+      )}
       <div style={{ marginTop: 24, marginBottom: 22 }}>
         <div style={{ marginBottom: 14 }}>
           <div style={{ color: 'var(--cws-text-primary)', fontSize: 17, fontWeight: 700, letterSpacing: 0.1 }}>
@@ -810,6 +1008,7 @@ function SyncModalContent(): React.ReactElement | null {
             <PostPushActions
               undoRecordId={state.undoRecordId}
               appLabel={state.appLabel}
+              healthCheck={state.healthCheck}
             />
           )}
 

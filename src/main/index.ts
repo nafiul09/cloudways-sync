@@ -17,6 +17,7 @@ import { registerRemoteHandlers } from './ipc/remoteHandlers';
 import { registerSyncHandlers } from './ipc/syncHandlers';
 import { PING_CHANNEL, type PingRequest, type PingResponse } from '../shared/ipcTypes';
 import { sweepLocalSnapshots, sweepStaleJobs } from './sync/cleanup';
+import { SyncLogger } from './sync/SyncLogger';
 import { bootstrapUpdater } from './updater/UpdateService';
 import { registerUpdateHandlers } from './ipc/updateHandlers';
 
@@ -46,6 +47,7 @@ export default function register(context: AddonMainContext): void {
   Promise.all([
     sweepStaleJobs(userDataDir),
     sweepLocalSnapshots(userDataDir),
+    SyncLogger.sweepStale(userDataDir),
   ]).catch(() => undefined);
 
   registerConnectionHandlers({ addIpcAsyncListener, connection, appPasswords });

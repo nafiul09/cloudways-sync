@@ -19,6 +19,7 @@ import { pruneRemoteSnapshots, sweepLocalSnapshots, sweepRemoteTempFiles, sweepS
 import type { PullMetadata, PullPlan, SiteImporter } from './types';
 import type { AppLink } from './AppLink';
 import { extractTarGz } from './pathUtil';
+import type { SyncLogger } from './SyncLogger';
 
 const execFileAsync = promisify(execFile);
 
@@ -35,6 +36,7 @@ export type PullOrchestratorOptions = {
   sftpFactory?: (config: SftpConnectConfig) => SftpClient;
   emitProgress?: (event: JobProgressEvent) => void;
   isCancelled?: (jobId: string) => boolean;
+  logger?: SyncLogger;
 };
 
 export class PullOrchestrator {
@@ -45,6 +47,7 @@ export class PullOrchestrator {
   private readonly sftpFactory: (config: SftpConnectConfig) => SftpClient;
   private readonly emitProgress?: (event: JobProgressEvent) => void;
   private readonly isCancelled?: (jobId: string) => boolean;
+  private readonly logger?: SyncLogger;
 
   constructor(opts: PullOrchestratorOptions) {
     this.link = opts.link;
@@ -54,6 +57,7 @@ export class PullOrchestrator {
     this.sftpFactory = opts.sftpFactory ?? ((config) => new SftpClient(config));
     this.emitProgress = opts.emitProgress;
     this.isCancelled = opts.isCancelled;
+    this.logger = opts.logger;
   }
 
   async run(plan: PullPlan): Promise<RunJobResponse> {
@@ -70,6 +74,15 @@ export class PullOrchestrator {
     const manifestPath = path.join(jobDir, 'manifest.json');
 
     await fs.promises.mkdir(stagingDir, { recursive: true });
+
+    this.logger?.info(`Pull started`, {
+      jobId,
+      detail: {
+        linkMode: this.link.mode,
+        destinationName: plan.destinationName,
+        includes: plan.includes,
+      },
+    });
 
     let ssh: SshClient | undefined;
     let sftp: SftpClient | undefined;
@@ -222,6 +235,7 @@ export class PullOrchestrator {
       // yet — don't emit fake success for them; the UI should treat
       // them as covered by local-site.
 
+      this.logger?.info(`Pull completed successfully`, { jobId, detail: { localSiteId: imported.localSiteId } });
       return {
         jobId,
         status: 'success',
@@ -326,7 +340,9 @@ export class PullOrchestrator {
       this.progress(jobId, stepId, 'success');
       return result;
     } catch (err) {
-      this.progress(jobId, stepId, 'failed', err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      this.progress(jobId, stepId, 'failed', msg);
+      this.logger?.error(`Step ${stepId} failed: ${msg}`, { jobId, step: stepId, detail: err instanceof Error ? err.stack : undefined });
       throw err;
     }
   }
@@ -340,6 +356,9 @@ export class PullOrchestrator {
     totalBytes?: number,
   ): void {
     this.emitProgress?.({ jobId, stepId, status, detail, bytesTransferred, totalBytes });
+    if (status === 'success' || status === 'failed' || status === 'skipped') {
+      this.logger?.info(`[pull] ${stepId}: ${status}${detail ? ` — ${detail}` : ''}`, { jobId, step: stepId });
+    }
   }
 
   private assertNotCancelled(jobId: string): void {

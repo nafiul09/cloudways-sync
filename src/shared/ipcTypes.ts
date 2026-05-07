@@ -49,6 +49,14 @@ export const CHANNELS = {
   // Breeze plugin detection
   DETECT_BREEZE: 'cs:detectBreeze',
 
+  // Preflight compatibility check
+  PREFLIGHT_CHECK: 'cs:preflightCheck',
+  UPGRADE_REMOTE_WP: 'cs:upgradeRemoteWp',
+
+  // Sync logs
+  GET_SYNC_LOGS: 'cs:getSyncLogs',
+  EXPORT_SYNC_LOGS: 'cs:exportSyncLogs',
+
   // Auto-update
   CHECK_UPDATE: 'cs:checkUpdate',
   INSTALL_UPDATE: 'cs:installUpdate',
@@ -230,12 +238,20 @@ export type PlanPullResponse = {
 
 export type RunJobRequest = { planId: string };
 
+export type HealthCheckResult = {
+  coreOk: boolean;
+  withPluginsOk: boolean;
+  failedPlugins?: string[];
+  errorDetail?: string;
+};
+
 export type RunJobResponse = {
   jobId: string;
   status: 'success' | 'failed' | 'cancelled';
   localSiteId?: string;
   localUrl?: string;
   webRootPath?: string;
+  healthCheck?: HealthCheckResult;
 };
 
 export type CancelJobRequest = { jobId: string };
@@ -503,6 +519,54 @@ export type LinkViaSftpRequest = {
 };
 
 export type LinkViaSftpResponse = { mapping: SftpSiteMapping };
+
+// --- Preflight compatibility check ---
+
+export type PreflightCheckRequest = {
+  linkMode: 'api' | 'sftp';
+  serverId?: number;
+  appId?: number;
+  localSiteId: string;
+  webRootPath: string;
+};
+
+export type PreflightCheckResponse = {
+  localWpVersion: string | null;
+  remoteWpVersion: string | null;
+  localPhpVersion: string | null;
+  remotePhpVersion: string | null;
+};
+
+export type UpgradeRemoteWpRequest = {
+  linkMode: 'api' | 'sftp';
+  serverId?: number;
+  appId?: number;
+  localSiteId: string;
+  targetVersion: string;
+};
+
+export type UpgradeRemoteWpResponse = {
+  success: boolean;
+  newVersion?: string;
+  error?: string;
+};
+
+// --- Sync logs ---
+
+export type SyncLogEntry = {
+  ts: string;
+  level: 'info' | 'warn' | 'error' | 'debug';
+  jobId?: string;
+  step?: string;
+  msg: string;
+  detail?: unknown;
+};
+
+export type GetSyncLogsRequest = { localSiteId: string; maxLines?: number };
+export type GetSyncLogsResponse = { entries: SyncLogEntry[] };
+
+export type ExportSyncLogsRequest = { localSiteId: string };
+export type ExportSyncLogsResponse = { content: string };
 
 // --- Auto-update ---
 

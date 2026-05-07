@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import type { ServiceContainerServices } from '@getflywheel/local/main';
 import { CloudwaysError } from '../cloudways/errors';
 import { AppPasswordStore, EncryptionUnavailableError, SftpCredentialStore } from '../credentials';
@@ -12,7 +13,10 @@ import { PushOrchestrator } from '../sync/PushOrchestrator';
 import { SiteMapper } from '../sync/SiteMapper';
 import { UndoLedger } from '../sync/UndoLedger';
 import { type AppLink, appLinkFor } from '../sync/AppLink';
+import { SshClient } from '../remote/SshClient';
 import { shellQuote } from '../remote/wpCli';
+import { resolvePath } from '../sync/pathUtil';
+import { SyncLogger } from '../sync/SyncLogger';
 import { restoreFromLocalSnapshot } from '../sync/snapshotUndo';
 import {
   CHANNELS,
@@ -40,6 +44,8 @@ import {
   type PlanPullResponse,
   type PlanPushRequest,
   type PlanPushResponse,
+  type PreflightCheckRequest,
+  type PreflightCheckResponse,
   type ProbeSftpRequest,
   type ProbeSftpResponse,
   type RunJobRequest,
@@ -51,6 +57,12 @@ import {
   type UnmapSiteResponse,
   type UndoPushRequest,
   type UndoPushResponse,
+  type UpgradeRemoteWpRequest,
+  type UpgradeRemoteWpResponse,
+  type GetSyncLogsRequest,
+  type GetSyncLogsResponse,
+  type ExportSyncLogsRequest,
+  type ExportSyncLogsResponse,
 } from '../../shared/ipcTypes';
 import type { AddIpcAsyncListener } from './handlers';
 
@@ -258,12 +270,16 @@ export function registerSyncHandlers({
           link = appLinkFor(apiMapping, { client: connection.requireClient(), appPasswords });
         }
 
+        const pullLogger = pullPlan.localSiteId
+          ? new SyncLogger(userDataDir, pullPlan.localSiteId)
+          : undefined;
         const orchestrator = new PullOrchestrator({
           link,
           importer: new LocalSiteImporter({ services }),
           userDataDir,
           isCancelled: (jobId) => jobs.isCancelled(jobId),
           emitProgress: (event: JobProgressEvent) => sendIPCEvent(CHANNELS.JOB_PROGRESS, event),
+          logger: pullLogger,
         });
         const result = await orchestrator.run(pullPlan);
 
@@ -369,10 +385,12 @@ export function registerSyncHandlers({
           link = appLinkFor(apiMapping, { client, appPasswords });
         }
 
+        const pushLogger = new SyncLogger(userDataDir, pushPlan.localSiteId);
         const orchestrator = new PushOrchestrator({
           link,
           undoLedger,
           userDataDir,
+          logger: pushLogger,
           localDbDump: async (localSiteId, destination) => {
             const site = services.siteData.getSite(localSiteId);
             if (!site) throw new Error(`Local site "${localSiteId}" not found.`);
@@ -756,6 +774,171 @@ export function registerSyncHandlers({
       };
       await siteMapper.set(mapping);
       return { mapping };
+    });
+  });
+
+  // --- Preflight compatibility check ---
+
+  addIpcAsyncListener(CHANNELS.PREFLIGHT_CHECK, (...args: unknown[]) => {
+    const payload = args[0] as PreflightCheckRequest | undefined;
+    return runHandler<PreflightCheckResponse>(async () => {
+      if (!payload?.localSiteId?.trim()) {
+        throw new CloudwaysError('AUTH_INVALID', 'localSiteId is required.', { retriable: false });
+      }
+      if (!payload.webRootPath?.trim()) {
+        throw new CloudwaysError('AUTH_INVALID', 'webRootPath is required.', { retriable: false });
+      }
+
+      // 1. Read local WP version from version.php
+      let localWpVersion: string | null = null;
+      try {
+        const versionFile = path.join(resolvePath(payload.webRootPath), 'wp-includes', 'version.php');
+        const content = await fs.promises.readFile(versionFile, 'utf8');
+        const match = content.match(/\$wp_version\s*=\s*'([^']+)'/);
+        localWpVersion = match?.[1] ?? null;
+      } catch { /* non-fatal */ }
+
+      // 2. Get local PHP version from Local's site object (services.php.version)
+      let localPhpVersion: string | null = null;
+      try {
+        const site = services.siteData.getSite(payload.localSiteId);
+        if (site) {
+          const siteAny = site as { services?: Record<string, { version?: string }> };
+          localPhpVersion = siteAny.services?.php?.version ?? null;
+        }
+      } catch { /* non-fatal */ }
+
+      // 3. Resolve the AppLink and SSH to get remote versions
+      const linkMode = payload.linkMode ?? 'api';
+      let link: AppLink;
+      if (linkMode === 'sftp') {
+        const mapping = await siteMapper.get(payload.localSiteId);
+        if (!mapping || mapping.linkMode !== 'sftp') {
+          throw new CloudwaysError('OPERATION_FAILED', 'No SFTP mapping found for this site.', { retriable: false });
+        }
+        if (!sftpCreds) throw new EncryptionUnavailableError();
+        link = appLinkFor(mapping, { sftpCreds });
+      } else {
+        if (typeof payload.serverId !== 'number' || typeof payload.appId !== 'number') {
+          throw new CloudwaysError('AUTH_INVALID', 'serverId and appId are required for API mode.', { retriable: false });
+        }
+        const apiMapping: ApiSiteMapping = {
+          linkMode: 'api',
+          localSiteId: payload.localSiteId,
+          serverId: payload.serverId,
+          appId: payload.appId,
+          appLabel: '',
+          remoteUrl: '',
+          createdAt: new Date().toISOString(),
+        };
+        link = appLinkFor(apiMapping, { client: connection.requireClient(), appPasswords });
+      }
+
+      const ctx = await link.resolve();
+      const ssh = new SshClient(ctx.auth);
+      await ssh.connect();
+
+      let remoteWpVersion: string | null = null;
+      let remotePhpVersion: string | null = null;
+      try {
+        const wpOut = await ssh.exec(`wp core version --skip-plugins --skip-themes --path=${shellQuote(ctx.webRoot)}`);
+        remoteWpVersion = wpOut.stdout?.trim() || null;
+      } catch { /* non-fatal */ }
+      try {
+        const phpOut = await ssh.exec('php -v');
+        const phpMatch = /^PHP\s+([\d.]+)/m.exec(phpOut.stdout ?? '');
+        remotePhpVersion = phpMatch ? phpMatch[1]! : null;
+      } catch { /* non-fatal */ }
+      await ssh.end();
+
+      return { localWpVersion, remoteWpVersion, localPhpVersion, remotePhpVersion };
+    });
+  });
+
+  addIpcAsyncListener(CHANNELS.UPGRADE_REMOTE_WP, (...args: unknown[]) => {
+    const payload = args[0] as UpgradeRemoteWpRequest | undefined;
+    return runHandler<UpgradeRemoteWpResponse>(async () => {
+      if (!payload?.localSiteId?.trim()) {
+        throw new CloudwaysError('AUTH_INVALID', 'localSiteId is required.', { retriable: false });
+      }
+      if (!payload.targetVersion?.trim()) {
+        throw new CloudwaysError('AUTH_INVALID', 'targetVersion is required.', { retriable: false });
+      }
+
+      const linkMode = payload.linkMode ?? 'api';
+      let link: AppLink;
+      if (linkMode === 'sftp') {
+        const mapping = await siteMapper.get(payload.localSiteId);
+        if (!mapping || mapping.linkMode !== 'sftp') {
+          throw new CloudwaysError('OPERATION_FAILED', 'No SFTP mapping found for this site.', { retriable: false });
+        }
+        if (!sftpCreds) throw new EncryptionUnavailableError();
+        link = appLinkFor(mapping, { sftpCreds });
+      } else {
+        if (typeof payload.serverId !== 'number' || typeof payload.appId !== 'number') {
+          throw new CloudwaysError('AUTH_INVALID', 'serverId and appId are required for API mode.', { retriable: false });
+        }
+        const apiMapping: ApiSiteMapping = {
+          linkMode: 'api',
+          localSiteId: payload.localSiteId,
+          serverId: payload.serverId,
+          appId: payload.appId,
+          appLabel: '',
+          remoteUrl: '',
+          createdAt: new Date().toISOString(),
+        };
+        link = appLinkFor(apiMapping, { client: connection.requireClient(), appPasswords });
+      }
+
+      const ctx = await link.resolve();
+      const ssh = new SshClient(ctx.auth);
+      await ssh.connect();
+
+      try {
+        const version = shellQuote(payload.targetVersion);
+        await ssh.exec(
+          `wp core update --version=${version} --force --skip-plugins --skip-themes --path=${shellQuote(ctx.webRoot)}`,
+        );
+        await ssh.exec(
+          `wp core update-db --skip-plugins --skip-themes --path=${shellQuote(ctx.webRoot)}`,
+        );
+        // Verify the upgrade
+        const verifyOut = await ssh.exec(
+          `wp core version --skip-plugins --skip-themes --path=${shellQuote(ctx.webRoot)}`,
+        );
+        const newVersion = verifyOut.stdout?.trim() || undefined;
+        return { success: true, newVersion };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      } finally {
+        await ssh.end();
+      }
+    });
+  });
+
+  // --- Sync logs handlers ---
+
+  addIpcAsyncListener(CHANNELS.GET_SYNC_LOGS, (...args: unknown[]) => {
+    const payload = args[0] as GetSyncLogsRequest | undefined;
+    return runHandler<GetSyncLogsResponse>(async () => {
+      if (!payload?.localSiteId?.trim()) {
+        throw new CloudwaysError('AUTH_INVALID', 'localSiteId is required.', { retriable: false });
+      }
+      const logger = new SyncLogger(userDataDir, payload.localSiteId);
+      const entries = await logger.tail(payload.maxLines ?? 200);
+      return { entries };
+    });
+  });
+
+  addIpcAsyncListener(CHANNELS.EXPORT_SYNC_LOGS, (...args: unknown[]) => {
+    const payload = args[0] as ExportSyncLogsRequest | undefined;
+    return runHandler<ExportSyncLogsResponse>(async () => {
+      if (!payload?.localSiteId?.trim()) {
+        throw new CloudwaysError('AUTH_INVALID', 'localSiteId is required.', { retriable: false });
+      }
+      const logger = new SyncLogger(userDataDir, payload.localSiteId);
+      const content = await logger.export();
+      return { content };
     });
   });
 

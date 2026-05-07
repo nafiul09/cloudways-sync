@@ -37,8 +37,10 @@ export const PUSH_STEPS: Array<Omit<SyncStep, 'status'>> = [
   { id: 'upload-content', label: 'Upload wp-content' },
   { id: 'remote-db-import', label: 'Import database on server' },
   { id: 'search-replace', label: 'Rewrite URLs on server' },
+  { id: 'wp-core-update', label: 'Update WordPress core on server' },
   { id: 'breeze-reactivate', label: 'Re-activate Breeze plugin' },
   { id: 'cache-flush', label: 'Flush caches' },
+  { id: 'health-check', label: 'Check site health' },
   { id: 'cleanup', label: 'Clean up temporary files' },
 ];
 

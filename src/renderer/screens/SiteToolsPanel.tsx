@@ -27,6 +27,7 @@ import type {
   SftpSiteMapping,
   SiteMapping,
   SmokeAppResponse,
+  SyncLogEntry,
 } from '../../shared/ipcTypes';
 import { isApiMapping } from '../../shared/ipcTypes';
 
@@ -319,6 +320,7 @@ export function SiteToolsPanel({ site }: { site: Site }): React.ReactElement {
               }}
             />
           )}
+          <SyncLogViewer siteId={site.id} />
         </>
       ) : (
         <UnlinkedState
@@ -1091,6 +1093,168 @@ function UnlinkedState({
   );
 }
 
+
+// --- Sync log viewer ---
+
+const ISSUES_URL = 'https://github.com/nafiul09/cloudways-sync/issues';
+
+function SyncLogViewer({ siteId }: { siteId: string }): React.ReactElement {
+  const [view, setView] = useState<'closed' | 'logs' | 'info'>('closed');
+  const [entries, setEntries] = useState<SyncLogEntry[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [copyLabel, setCopyLabel] = useState('Copy logs');
+
+  const loadLogs = async () => {
+    if (view === 'logs') { setView('closed'); return; }
+    setView('logs');
+    setLoading(true);
+    try {
+      const res = await ipcClient.getSyncLogs({ localSiteId: siteId, maxLines: 100 });
+      setEntries(res.entries);
+    } catch { /* non-fatal */ }
+    setLoading(false);
+  };
+
+  const handleCopy = async () => {
+    try {
+      const res = await ipcClient.exportSyncLogs({ localSiteId: siteId });
+      await navigator.clipboard.writeText(res.content);
+      setCopyLabel('Copied!');
+      setTimeout(() => setCopyLabel('Copy logs'), 2000);
+    } catch { /* non-fatal */ }
+  };
+
+  const levelColor: Record<string, string> = {
+    error: '#ef4e65',
+    warn: '#f0ad4e',
+    info: 'var(--cws-text-secondary)',
+    debug: 'var(--cws-text-tertiary)',
+  };
+
+  return (
+    <div style={{ marginTop: 24, borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 16 }}>
+      {/* Header row: title + info button */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <TextButton onClick={loadLogs} style={{ fontSize: 13, fontWeight: 500 }}>
+          {view === 'logs' ? '\u25BC' : '\u25B6'} Sync Logs
+        </TextButton>
+        <span
+          role="button"
+          tabIndex={0}
+          title="About sync logs"
+          onClick={() => setView(view === 'info' ? 'closed' : 'info')}
+          onKeyDown={(e) => { if (e.key === 'Enter') setView(view === 'info' ? 'closed' : 'info'); }}
+          style={{
+            width: 20, height: 20, borderRadius: '50%',
+            border: `1.5px solid ${view === 'info' ? '#51bb7b' : 'rgba(255,255,255,0.25)'}`,
+            color: view === 'info' ? '#51bb7b' : 'rgba(255,255,255,0.5)',
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: 12, fontWeight: 700, fontStyle: 'italic', fontFamily: 'Georgia, serif',
+            cursor: 'pointer', userSelect: 'none', flexShrink: 0,
+            transition: 'border-color 0.15s, color 0.15s',
+          }}
+        >
+          i
+        </span>
+      </div>
+
+      {/* Info panel */}
+      {view === 'info' && (
+        <div style={{
+          marginTop: 10, padding: '14px 16px',
+          background: 'rgba(255,255,255,0.04)', borderRadius: 8,
+          fontSize: 13, lineHeight: 1.7, color: 'var(--cws-text-secondary)',
+        }}>
+          <Text style={{ fontWeight: 600, fontSize: 14, display: 'block', marginBottom: 10, color: 'var(--cws-text-default)' }}>
+            About Sync Logs
+          </Text>
+
+          <p style={{ margin: '0 0 8px' }}>
+            <strong>What is logged:</strong> Each push and pull records step-by-step progress,
+            timing, and any errors. This helps diagnose issues if a sync fails.
+          </p>
+          <p style={{ margin: '0 0 8px' }}>
+            <strong>Where logs are stored:</strong> Logs are saved locally on your device
+            in the Local WP data directory, one file per site.
+          </p>
+          <p style={{ margin: '0 0 8px' }}>
+            <strong>How long:</strong> Logs are kept for up to 30 days and capped at 2 MB per site.
+            Older logs are automatically cleaned up.
+          </p>
+          <p style={{ margin: '0 0 8px' }}>
+            <strong>How to share:</strong> Click <em>"Copy logs"</em> below the log viewer, then paste into
+            a{' '}
+            <span
+              role="link"
+              tabIndex={0}
+              onClick={() => openUrl(`${ISSUES_URL}/new`)}
+              onKeyDown={(e) => { if (e.key === 'Enter') openUrl(`${ISSUES_URL}/new`); }}
+              style={{ color: '#51bb7b', cursor: 'pointer', textDecoration: 'underline' }}
+            >GitHub issue</span>
+            {' '}so we can investigate.
+          </p>
+
+          <div style={{
+            marginTop: 12, paddingTop: 10,
+            borderTop: '1px solid rgba(255,255,255,0.06)',
+            fontSize: 12, color: 'var(--cws-text-tertiary)', lineHeight: 1.7,
+          }}>
+            <strong style={{ color: 'var(--cws-text-secondary)' }}>Privacy:</strong> Logs contain
+            only sync step names, timestamps, and error messages. No server passwords, API keys,
+            database contents, or personal information is ever recorded. All log data stays on your
+            device and is never sent anywhere automatically.
+          </div>
+        </div>
+      )}
+
+      {/* Log viewer */}
+      {view === 'logs' && (
+        <div style={{ marginTop: 10 }}>
+          {loading ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0' }}>
+              <Spinner style={{ width: 14, height: 14 }} />
+              <Text size="caption">Loading logs...</Text>
+            </div>
+          ) : entries.length === 0 ? (
+            <Text size="caption" style={{ color: 'var(--cws-text-tertiary)', padding: '8px 0' }}>
+              No sync logs yet. Logs appear after your first push or pull.
+            </Text>
+          ) : (
+            <>
+              <div style={{
+                maxHeight: 240, overflow: 'auto',
+                background: 'rgba(0,0,0,0.15)', borderRadius: 6,
+                padding: '8px 10px', fontSize: 11,
+                fontFamily: 'monospace', lineHeight: 1.6,
+              }}>
+                {entries.map((e, i) => (
+                  <div key={i} style={{ color: levelColor[e.level] ?? 'var(--cws-text-secondary)' }}>
+                    <span style={{ opacity: 0.6 }}>{e.ts.replace('T', ' ').slice(0, 19)}</span>
+                    {' '}
+                    <span style={{ fontWeight: e.level === 'error' ? 600 : 400 }}>
+                      [{e.level.toUpperCase()}]
+                    </span>
+                    {' '}{e.msg}
+                    {e.step && <span style={{ opacity: 0.5 }}> ({e.step})</span>}
+                  </div>
+                ))}
+              </div>
+              <div style={{ display: 'flex', gap: 10, marginTop: 8 }}>
+                <TextButton onClick={handleCopy} style={{ fontSize: 12 }}>{copyLabel}</TextButton>
+                <TextButton
+                  onClick={() => openUrl(`${ISSUES_URL}/new`)}
+                  style={{ fontSize: 12 }}
+                >
+                  Report an issue
+                </TextButton>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 const styles: Record<string, React.CSSProperties> = {
   wrap: { padding: 24 },

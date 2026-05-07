@@ -14,6 +14,7 @@ import {
   wpOptionGet,
 } from '../remote/wpCli';
 import type {
+  HealthCheckResult,
   JobProgressEvent,
   RunJobResponse,
   UndoRecord,
@@ -25,6 +26,7 @@ import type { PullMetadata, PushPlan } from './types';
 import type { UndoLedger } from './UndoLedger';
 import type { AppLink } from './AppLink';
 import { resolvePath, gzipFile, createTarGz } from './pathUtil';
+import type { SyncLogger } from './SyncLogger';
 
 const execFileAsync = promisify(execFile);
 
@@ -51,6 +53,7 @@ export type PushOrchestratorOptions = {
   localDbDump?: LocalDbDumpFn;
   emitProgress?: (event: JobProgressEvent) => void;
   isCancelled?: (jobId: string) => boolean;
+  logger?: SyncLogger;
 };
 
 const defaultExecLocal: ExecLocalFn = async (cmd, args, opts) => {
@@ -67,6 +70,7 @@ export class PushOrchestrator {
   private readonly localDbDump?: LocalDbDumpFn;
   private readonly emitProgress?: (event: JobProgressEvent) => void;
   private readonly isCancelled?: (jobId: string) => boolean;
+  private readonly logger?: SyncLogger;
 
   constructor(opts: PushOrchestratorOptions) {
     this.link = opts.link;
@@ -78,6 +82,7 @@ export class PushOrchestrator {
     this.localDbDump = opts.localDbDump;
     this.emitProgress = opts.emitProgress;
     this.isCancelled = opts.isCancelled;
+    this.logger = opts.logger;
   }
 
   async run(plan: PushPlan): Promise<RunJobResponse> {
@@ -93,8 +98,19 @@ export class PushOrchestrator {
 
     await fs.promises.mkdir(stagingDir, { recursive: true });
 
+    this.logger?.info(`Push started`, {
+      jobId,
+      detail: {
+        linkMode: this.link.mode,
+        localSiteId: plan.localSiteId,
+        webRootPath: plan.webRootPath,
+        includes: plan.includes,
+      },
+    });
+
     let ssh: SshClient | undefined;
     let sftp: SftpClient | undefined;
+    let healthCheck: HealthCheckResult | undefined;
     try {
       this.assertNotCancelled(jobId);
 
@@ -343,7 +359,42 @@ export class PushOrchestrator {
         });
       }
 
-      // Step 10: Re-activate Breeze BEFORE cache flush so its purge
+      // Step 10: Upgrade remote WP core if versions differ
+      if (!shouldSkipPushStep('search-replace', plan.includes)) {
+        await this.step(jobId, 'wp-core-update', async () => {
+          const localWpVersion = await readLocalWpVersion(plan.webRootPath);
+          if (!localWpVersion || !metadata.wpVersion) {
+            this.progress(jobId, 'wp-core-update', 'running', 'Could not determine WP versions; skipping.');
+            return;
+          }
+          if (localWpVersion === metadata.wpVersion) {
+            this.progress(jobId, 'wp-core-update', 'running', `Versions match (${localWpVersion}); no update needed.`);
+            return;
+          }
+          this.progress(jobId, 'wp-core-update', 'running',
+            `Updating remote WP ${metadata.wpVersion} → ${localWpVersion}…`);
+          try {
+            await wpCli({ ssh: ssh as SshClient, appPublicPath }, [
+              'core', 'update', `--version=${localWpVersion}`, '--force',
+              '--skip-plugins', '--skip-themes',
+            ], { timeoutMs: 5 * 60 * 1000 });
+            await wpCli({ ssh: ssh as SshClient, appPublicPath }, [
+              'core', 'update-db',
+              '--skip-plugins', '--skip-themes',
+            ], { timeoutMs: 2 * 60 * 1000 });
+          } catch (err) {
+            // Non-fatal — log and continue. The site may still work if
+            // the version gap is small.
+            console.warn('[CWS Push] WP core update failed:', err);
+            this.progress(jobId, 'wp-core-update', 'running',
+              `Core update failed: ${err instanceof Error ? err.message : String(err)}. Continuing…`);
+          }
+        });
+      } else {
+        this.progress(jobId, 'wp-core-update', 'skipped');
+      }
+
+      // Step 11: Re-activate Breeze BEFORE cache flush so its purge
       // commands are available (DB import leaves it deactivated).
       if (plan.reactivateBreeze) {
         await this.step(jobId, 'breeze-reactivate', async () => {
@@ -373,7 +424,36 @@ export class PushOrchestrator {
         ).catch(() => undefined);
       });
 
-      // Step 12: Cleanup remote temp files (snapshot files are kept
+      // Step 15: Post-push health check
+      await this.step(jobId, 'health-check', async () => {
+        const wpCtx = { ssh: ssh as SshClient, appPublicPath };
+        // Test 1: WP core loads without plugins
+        try {
+          await wpCli(wpCtx, ['eval', "echo 'ok';", '--skip-plugins', '--skip-themes'], { timeoutMs: 30_000 });
+          if (!healthCheck) healthCheck = { coreOk: true, withPluginsOk: true };
+          else healthCheck.coreOk = true;
+        } catch (err) {
+          const detail = err instanceof Error ? err.message : String(err);
+          healthCheck = { coreOk: false, withPluginsOk: false, errorDetail: detail, ...(healthCheck || {}) };
+          this.progress(jobId, 'health-check', 'running', `WP core check failed: ${detail}`);
+          return; // If core is broken, no point testing with plugins
+        }
+
+        // Test 2: WP loads with plugins
+        try {
+          await wpCli(wpCtx, ['eval', "echo 'ok';"], { timeoutMs: 30_000 });
+          if (healthCheck) healthCheck.withPluginsOk = true;
+        } catch (err) {
+          const detail = err instanceof Error ? err.message : String(err);
+          if (healthCheck) {
+            healthCheck.withPluginsOk = false;
+            healthCheck.errorDetail = detail;
+          }
+          this.progress(jobId, 'health-check', 'running', `Plugin compatibility issue: ${detail}`);
+        }
+      });
+
+      // Step 16: Cleanup remote temp files (snapshot files are kept
       // for undo — they're cleaned only after the user confirms).
       await this.step(jobId, 'cleanup', async () => {
         await cleanupRemote(ssh, remoteSql, remoteSqlGz, remoteContentTarGz);
@@ -394,9 +474,11 @@ export class PushOrchestrator {
       };
       await this.undoLedger.add(undoRecord);
 
+      this.logger?.info(`Push completed successfully`, { jobId, detail: healthCheck });
       return {
         jobId,
         status: 'success',
+        healthCheck,
       };
     } finally {
       // Clean remote work-in-progress temp files (snapshot files are
@@ -565,7 +647,9 @@ export class PushOrchestrator {
       this.progress(jobId, stepId, 'success');
       return result;
     } catch (err) {
-      this.progress(jobId, stepId, 'failed', err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      this.progress(jobId, stepId, 'failed', msg);
+      this.logger?.error(`Step ${stepId} failed: ${msg}`, { jobId, step: stepId, detail: err instanceof Error ? err.stack : undefined });
       throw err;
     }
   }
@@ -579,6 +663,9 @@ export class PushOrchestrator {
     totalBytes?: number,
   ): void {
     this.emitProgress?.({ jobId, stepId, status, detail, bytesTransferred, totalBytes });
+    if (status === 'success' || status === 'failed' || status === 'skipped') {
+      this.logger?.info(`[push] ${stepId}: ${status}${detail ? ` — ${detail}` : ''}`, { jobId, step: stepId });
+    }
   }
 
   private assertNotCancelled(jobId: string): void {
@@ -608,6 +695,20 @@ function relativeToHome(absPath: string): string {
   }
   return absPath;
 }
+
+/** Read the local WordPress version from wp-includes/version.php. */
+async function readLocalWpVersion(webRootPath: string): Promise<string | undefined> {
+  try {
+    const versionFile = path.join(resolvePath(webRootPath), 'wp-includes', 'version.php');
+    const content = await fs.promises.readFile(versionFile, 'utf8');
+    const match = content.match(/\$wp_version\s*=\s*'([^']+)'/);
+    return match?.[1];
+  } catch {
+    return undefined;
+  }
+}
+
+/** Parse the active_plugins JSON from wp option get. Returns plugin basenames. */
 
 async function collectMetadata(ssh: SshClient, appPublicPath: string): Promise<PullMetadata> {
   const [homeUrl, siteUrl, wpVersion, breezeStatus] = await Promise.all([

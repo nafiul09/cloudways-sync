@@ -107,17 +107,21 @@ class FakeSsh {
     if (command.includes('option get home')) return { code: 0, stdout: 'https://example.com\n', stderr: '' };
     if (command.includes('option get siteurl')) return { code: 0, stdout: 'https://example.com\n', stderr: '' };
     if (command.includes('core version')) return { code: 0, stdout: '6.5.0\n', stderr: '' };
+    if (command.includes('core update-db')) return { code: 0, stdout: 'Success: WordPress database already at latest db version.\n', stderr: '' };
+    if (command.includes('core update')) return { code: 0, stdout: 'Success: WordPress updated successfully.\n', stderr: '' };
     if (command.includes('core is-installed --network')) return { code: 1, stdout: '', stderr: '' };
     if (command.startsWith('gzip -df')) return { code: 0, stdout: '', stderr: '' };
     if (command.includes('db reset')) return { code: 0, stdout: '', stderr: '' };
     if (command.includes('db import')) return { code: 0, stdout: '', stderr: '' };
     if (command.includes('search-replace')) return { code: 0, stdout: 'Success: Made 42 replacements.\n', stderr: '' };
+    if (command.includes('option get active_plugins')) return { code: 0, stdout: '["hello-dolly/hello.php","akismet/akismet.php"]\n', stderr: '' };
     if (command.includes('option update')) return { code: 0, stdout: 'Success: Updated', stderr: '' };
     if (command.includes('db query')) return { code: 0, stdout: '', stderr: '' };
     if (command.includes('cache flush')) return { code: 0, stdout: '', stderr: '' };
     if (command.includes('rewrite flush')) return { code: 0, stdout: '', stderr: '' };
     if (command.includes('plugin activate')) return { code: 0, stdout: 'Plugin activated.', stderr: '' };
     if (command.includes('breeze purge')) return { code: 0, stdout: '', stderr: '' };
+    if (command.includes("eval")) return { code: 0, stdout: 'ok', stderr: '' };
     if (command.startsWith('curl')) return { code: 0, stdout: '', stderr: '' };
     if (command.startsWith('tar xzf')) return { code: 0, stdout: '', stderr: '' };
     if (command.startsWith('rm -rf')) return { code: 0, stdout: '', stderr: '' };
@@ -173,13 +177,17 @@ function fakeExecLocal(): ExecLocalFn {
 }
 
 /** Create a local webroot with wp-content and a SQL dump for push tests. */
-function createLocalWebroot(): string {
+function createLocalWebroot(wpVersion = '6.9.4'): string {
   const dir = tmpDir();
   const wpContent = path.join(dir, 'wp-content', 'themes', 'twentytwentyfour');
   fs.mkdirSync(wpContent, { recursive: true });
   fs.writeFileSync(path.join(wpContent, 'style.css'), 'theme');
   fs.mkdirSync(path.join(dir, 'wp-content', 'plugins'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'wp-content', 'plugins', 'hello.php'), '<?php // Hello');
+  // wp-includes/version.php so readLocalWpVersion can detect the local WP version
+  const wpIncludes = path.join(dir, 'wp-includes');
+  fs.mkdirSync(wpIncludes, { recursive: true });
+  fs.writeFileSync(path.join(wpIncludes, 'version.php'), `<?php\n$wp_version = '${wpVersion}';\n`);
   return dir;
 }
 
@@ -234,8 +242,17 @@ describe('PushOrchestrator', () => {
     expect(progress).toContain('upload-content:success');
     expect(progress).toContain('remote-db-import:success');
     expect(progress).toContain('search-replace:success');
+    expect(progress).toContain('wp-core-update:success');
     expect(progress).toContain('cache-flush:success');
+    expect(progress).toContain('health-check:success');
     expect(progress).toContain('cleanup:success');
+
+    // WP core update ran because local (6.9.4) != remote (6.5.0)
+    expect(fakeSsh.commands.some((cmd) => cmd.includes('core update') && cmd.includes('--version=6.9.4'))).toBe(true);
+    expect(fakeSsh.commands.some((cmd) => cmd.includes('core update-db'))).toBe(true);
+
+    // Health check ran (wp eval commands)
+    expect(fakeSsh.commands.some((cmd) => cmd.includes('eval'))).toBe(true);
 
     // Undo record was persisted
     const records = await undoLedger.list();
