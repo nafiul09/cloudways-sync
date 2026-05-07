@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { request } from 'undici';
-import { fetchLatestRelease, type ReleaseInfo } from './GitHubRelease';
+import { fetchLatestRelease } from './GitHubRelease';
 import { isNewer } from './semver';
 import { extractTarGz } from '../sync/pathUtil';
 import { CHANNELS, type CheckUpdateResponse, type UpdateAvailableEvent, type UpdateProgressEvent, type UpdateInstalledEvent } from '../../shared/ipcTypes';

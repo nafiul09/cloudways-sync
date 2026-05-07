@@ -434,7 +434,7 @@ export class PushOrchestrator {
           else healthCheck.coreOk = true;
         } catch (err) {
           const detail = err instanceof Error ? err.message : String(err);
-          healthCheck = { coreOk: false, withPluginsOk: false, errorDetail: detail, ...(healthCheck || {}) };
+          healthCheck = { coreOk: false, withPluginsOk: false, errorDetail: detail };
           this.progress(jobId, 'health-check', 'running', `WP core check failed: ${detail}`);
           return; // If core is broken, no point testing with plugins
         }
@@ -560,7 +560,7 @@ export class PushOrchestrator {
       const dumpCmd = buildWpCommand(appPublicPath, ['db', 'export', '-'], { skipPlugins: true });
       this.progress(jobId, 'remote-backup', 'running', 'Dumping current DB on server…');
       await execChecked(ssh, `${dumpCmd} | gzip > ${shellQuote(remoteSqlGz)}`);
-    } catch (err) {
+    } catch {
       // wp-cli unavailable — leave an empty marker so undo still finds the path.
       this.progress(jobId, 'remote-backup', 'running', 'wp-cli unavailable; DB snapshot skipped.');
       await ssh.exec(`: > ${shellQuote(remoteSqlGz)}`).catch(() => undefined);
@@ -587,7 +587,7 @@ export class PushOrchestrator {
         await sftp.download(relativeToHome(remoteContentTar), path.join(localDir, 'wp-content.tar.gz'));
         await sftp.download(relativeToHome(remoteSqlGz), path.join(localDir, 'db.sql.gz'));
         localCachePath = localDir;
-      } catch (err) {
+      } catch {
         this.progress(jobId, 'remote-backup', 'running',
           'Local snapshot mirror failed; remote copy retained.');
       }

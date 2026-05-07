@@ -5,7 +5,6 @@
 // Logs are rotated when they exceed MAX_LOG_SIZE_BYTES — the current
 // file is renamed to sync.log.1 and a fresh file is started.
 
-import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 

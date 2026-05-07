@@ -583,9 +583,9 @@ export class SftpClient {
         await this.walkAndTransfer(remoteRoot, localRoot, childRel, matcher, opts);
       } else if (entry.type === 'file') {
         if (!matcher.match(childRel)) continue;
-        await this.download(remoteChild, localChild, {
-          ...(opts.onProgress ? { onProgress: opts.onProgress } : {}),
-        });
+        await this.download(remoteChild, localChild,
+          opts.onProgress ? { onProgress: opts.onProgress } : {},
+        );
         opts.onFile?.(remoteChild, localChild);
       }
       // Symlinks / others: skip silently.

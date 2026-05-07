@@ -1,7 +1,5 @@
-import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { promisify } from 'node:util';
 import { CloudwaysError } from '../cloudways/errors';
 import { RemoteError } from '../remote/errors';
 import { SftpClient, type SftpConnectConfig } from '../remote/SftpClient';
@@ -20,8 +18,6 @@ import type { PullMetadata, PullPlan, SiteImporter } from './types';
 import type { AppLink } from './AppLink';
 import { extractTarGz } from './pathUtil';
 import type { SyncLogger } from './SyncLogger';
-
-const execFileAsync = promisify(execFile);
 
 export type PullOrchestratorOptions = {
   /**
